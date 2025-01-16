@@ -31,8 +31,10 @@ class SALMONNDataset(Dataset):
         self.prefix = prefix
 
         # json 파일 로드
-        self.annotation = json.load(open(ann_path, "r"))["annotation"]
-
+        data = json.load(open(ann_path, "r"))["annotation"]
+        annotation_wo_GigaSpeech = [item for item in data if 'GigaSpeech' not in item['path']]
+        
+        self.annotation = annotation_wo_GigaSpeech
         # Whisper 모델 로드 (특히 음성 데이터를 처리하는 모델)
         self.wav_processor = WhisperFeatureExtractor.from_pretrained(whisper_path)
         
@@ -73,7 +75,7 @@ class SALMONNDataset(Dataset):
 
     def __getitem__(self, index):
         ann = self.annotation[index]
-        audio_path = self.prefix + '/' + ann["path"]
+        audio_path = (self.prefix + '/' + ann["path"]).replace("//", "/")
         try:
             # audio = 오디오 데이터, sr = 샘플링 레이트 (1초당 샘플 수, 샘플 = 오디오 데이터 단위)
             audio, sr = sf.read(audio_path)
@@ -83,7 +85,7 @@ class SALMONNDataset(Dataset):
         
         if len(audio.shape) == 2: # stereo to mono
             audio = audio[:, 0] # 한 채널만 선택해서 사용
-        
+
         # 확장된 오디오 데이터 처리
         #if "expand_wav" in ann:
             # p = 확장된 오디오 데이터 경로

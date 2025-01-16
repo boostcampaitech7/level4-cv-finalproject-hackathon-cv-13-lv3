@@ -1,3 +1,6 @@
+export HF_HOME="/data/huggingface"
+export TRANSFORMERS_CACHE="/data/huggingface/transformers"
+
 train_config="./configs/train_stage1.yaml"
 
 # 기본 옵션 설정

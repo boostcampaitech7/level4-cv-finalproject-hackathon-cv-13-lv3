@@ -18,7 +18,7 @@ model:
   whisper_path: "openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
-  token: "<hf_token>"  # Use hf token to access gated repositories
+  token: "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"  # Use hf token to access gated repositories
 
   ckpt: "" #"model ckpt" # if not "", load model from ckpt for training or evaluation
 
@@ -50,11 +50,11 @@ model:
   end_sym: "<|end_of_text|>"   # TODO: change eos token
 
 datasets:
-  prefix: "./data/dataset"
+  prefix: "/data/dataset"
   
-  train_ann_path: "stage1_train.json"
-  valid_ann_path: "stage1_valid.json"
-  test_ann_path: "stage1_test.json"
+  train_ann_path: "/data/dataset/stage1_train.json"
+  valid_ann_path: "/data/dataset/stage1_train.json"
+  test_ann_path: "/data/dataset/test_aac.json"
 
   whisper_path: "openai/whisper-large-v2"
 
