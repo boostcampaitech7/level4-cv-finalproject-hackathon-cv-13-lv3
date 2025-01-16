@@ -16,7 +16,7 @@ model:
   # paths
   llama_path: "meta-llama/Llama-3.2-3B-Instruct"
   whisper_path: "openai/whisper-large-v2"
-  beats_path: "/root/base_data/checkpoints/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
+  beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
   token: "<hf_token>"  # Use hf token to access gated repositories
 
@@ -50,11 +50,11 @@ model:
   end_sym: "<|end_of_text|>"   # TODO: change eos token
 
 datasets:
-  prefix: "/root/base_data/audios_salmonn_1%_sampled"
+  prefix: "./data/dataset"
   
-  train_ann_path: "data/stage1_train.json"
-  valid_ann_path: "data/stage1_valid.json"
-  test_ann_path: "data/stage1_test.json"
+  train_ann_path: "stage1_train.json"
+  valid_ann_path: "stage1_valid.json"
+  test_ann_path: "stage1_test.json"
 
   whisper_path: "openai/whisper-large-v2"
 
