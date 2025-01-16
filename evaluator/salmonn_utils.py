@@ -70,8 +70,8 @@ class SALMONNTestDataset(Dataset):
             "id": id,
         }
 
-        if self.task is not None:
-            entity['text'] = [s["text"] for s in samples]
+        # if self.task is not None:
+        #     entity['text'] = [s["text"] for s in samples]
 
         return entity
 
@@ -111,7 +111,7 @@ class SALMONNTestDataset(Dataset):
             "id": ann["path"],
         }
 
-        if self.task is not None:
-            entity['text'] = ann['text']
+        # if self.task is not None:
+        #     entity['text'] = ann['text']
 
         return entity
