@@ -10,6 +10,7 @@ import gc
 import subprocess
 from transformers import DynamicCache
 from tqdm import tqdm
+from utils import Gsheet_param
 
 import os
 
@@ -224,7 +225,7 @@ def main(args):
     print(f"Average inference time: {average_inference_time:.4f} seconds")
     print(f"Average TTFT: {average_ttft:.4f} seconds")
     print(f"Average TPOT: {average_tpot:.4f} seconds")
-
+    Gsheet_param(cfg, average_memory_usage, average_inference_time, average_ttft, average_tpot)
 
 if __name__ == "__main__":
     args = parse_args()
