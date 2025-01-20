@@ -10,7 +10,7 @@ import gc
 import subprocess
 from transformers import DynamicCache
 from tqdm import tqdm
-from utils import Gsheet_param
+from custom_utils.Gsheet_Effi import Gsheet_param
 
 import os
 
