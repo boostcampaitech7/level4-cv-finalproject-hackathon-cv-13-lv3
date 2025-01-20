@@ -375,6 +375,16 @@ class BertOutput(nn.Module):
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
 
+def gather_tokens_by_index(tensor, indices):
+    """
+    tensor: (B, N, hidden_dim) 형태
+    indices: (B, K) 형태 (Top-K 인덱스)
+    반환: (B, K, hidden_dim)
+    """
+    B, N, D = tensor.size()
+    batch_idx = torch.arange(B, device=indices.device).unsqueeze(1)
+    pruned = tensor[batch_idx, indices, :]
+    return pruned
 
 class BertLayer(nn.Module):
     def __init__(self, config, layer_num):
@@ -399,6 +409,8 @@ class BertLayer(nn.Module):
 
         self.intermediate_query = BertIntermediate(config)
         self.output_query = BertOutput(config)
+        
+        self.keep_rate = 0.7      
 
     def forward(
         self,
@@ -419,21 +431,22 @@ class BertLayer(nn.Module):
             hidden_states,
             attention_mask,
             head_mask,
-            output_attentions=output_attentions,
+            output_attentions=True,
             past_key_value=self_attn_past_key_value,
         )
-        attention_output = self_attention_outputs[0]
+        attention_output = self_attention_outputs[0]  
+        attention_probs = self_attention_outputs[1]  
+        present_key_value = self_attention_outputs[-1]  
+
         outputs = self_attention_outputs[1:-1]
 
-        present_key_value = self_attention_outputs[-1]
-
         if query_length > 0:
+            # 쿼리 부분과 텍스트 부분 분리
             query_attention_output = attention_output[:, :query_length, :]
 
             if self.has_cross_attention:
-                assert (
-                    encoder_hidden_states is not None
-                ), "encoder_hidden_states must be given for cross-attention layers"
+                assert encoder_hidden_states is not None, \
+                    "encoder_hidden_states must be given for cross-attention layers"
                 cross_attention_outputs = self.crossattention(
                     query_attention_output,
                     attention_mask,
@@ -443,16 +456,15 @@ class BertLayer(nn.Module):
                     output_attentions=output_attentions,
                 )
                 query_attention_output = cross_attention_outputs[0]
-                outputs = (
-                    outputs + cross_attention_outputs[1:-1]
-                )  # add cross attentions if we output attention weights
+                outputs = outputs + cross_attention_outputs[1:-1]
 
-            layer_output = apply_chunking_to_forward(
+            layer_output_query = apply_chunking_to_forward(
                 self.feed_forward_chunk_query,
                 self.chunk_size_feed_forward,
                 self.seq_len_dim,
                 query_attention_output,
             )
+
             if attention_output.shape[1] > query_length:
                 layer_output_text = apply_chunking_to_forward(
                     self.feed_forward_chunk,
@@ -460,26 +472,41 @@ class BertLayer(nn.Module):
                     self.seq_len_dim,
                     attention_output[:, query_length:, :],
                 )
-                layer_output = torch.cat([layer_output, layer_output_text], dim=1)
+                layer_output = torch.cat([layer_output_query, layer_output_text], dim=1)
+            else:
+                layer_output = layer_output_query
+
         else:
+            B, N, _ = attention_output.shape
+            K = int(N * self.keep_rate)
+
+            token_importance = attention_probs.sum(dim=1).sum(dim=1)
+
+            _, topk_indices = torch.topk(token_importance, K, dim=1) 
+
+            pruned_attention_output = gather_tokens_by_index(attention_output, topk_indices)
+            pruned_hidden_states = gather_tokens_by_index(hidden_states, topk_indices)
+
             layer_output = apply_chunking_to_forward(
                 self.feed_forward_chunk,
                 self.chunk_size_feed_forward,
                 self.seq_len_dim,
-                attention_output,
+                pruned_attention_output,
             )
-        outputs = (layer_output,) + outputs
 
+        outputs = (layer_output,) + outputs
         outputs = outputs + (present_key_value,)
 
         return outputs
 
     def feed_forward_chunk(self, attention_output):
+        # feed-forward chunk (기본 BERT 논문 구조)
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
         return layer_output
 
     def feed_forward_chunk_query(self, attention_output):
+        # query 토큰 전용 feed-forward (Q-former 등에서 사용)
         intermediate_output = self.intermediate_query(attention_output)
         layer_output = self.output_query(intermediate_output, attention_output)
         return layer_output
