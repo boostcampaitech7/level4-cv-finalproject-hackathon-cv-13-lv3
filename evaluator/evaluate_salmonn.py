@@ -16,6 +16,7 @@ from salmonn_utils import SALMONNTestDataset, load_preprocessor, load_model
 from config import Config
 from utils import get_dataloader, prepare_sample
 from metrics import compute_wer, compute_spider
+from inference_timer import InferenceTimer
 
 
 def parse_args():
@@ -46,6 +47,8 @@ def parse_args():
     parser.add_argument("--mode", type=str, default="valid_aac", 
                     help="Mode to evaluate. Supports submission and validation modes for ASR and AAC tasks.", 
                     choices=['submission_asr', 'submission_aac', 'valid_asr', 'valid_aac'])
+    parser.add_argument("--timer", action='store_true', default=False,
+                        help="If True, measure the time taken for inference.")
     # --- New options end ---
 
     args = parser.parse_args()
@@ -92,6 +95,20 @@ def replace_test_ann_path(cfg):
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_aac
     return cfg
 
+def register_hooks(preprocessor, llm):
+    timer = InferenceTimer()
+    
+    # Register hooks for all models
+    models_to_profile = {
+        'preprocessor': preprocessor,
+        'llm': llm
+    }
+    
+    for model_name, model in models_to_profile.items():
+        timer.register_module_hooks(model, prefix=model_name)
+    
+    return timer
+
 def main(args):
     cfg = Config(args)
     cfg = replace_test_ann_path(cfg)
@@ -105,6 +122,9 @@ def main(args):
 
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)
+
+    if args.timer:
+        timer = register_hooks(salmonn_preprocessor, llama_model)
 
     # Evaluation
     testset_ids, hyps, refs = [], [], []
@@ -162,8 +182,7 @@ def main(args):
             ref = samples["text"]
             refs.extend(ref)
 
-    
-
+    # Save results
     if args.make_submission:
         os.makedirs("submission_results", exist_ok=True)
         file_name = f"submission_results/{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.mode}.csv"
@@ -178,6 +197,15 @@ def main(args):
 
     result_df = pd.DataFrame({"testset_id": testset_ids, "text": hyps})
     result_df.to_csv(file_name, index=False)
+    
+    if args.timer:
+        timer.save_measurement(
+            output_dir="inference_times", 
+            models={
+                'preprocessor': salmonn_preprocessor,  # preprocessor 전체를 전달
+                'llm': llama_model  # llm 모델 전달
+            }
+        )
 
 if __name__ == '__main__':
     args = parse_args()
