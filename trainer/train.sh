@@ -1,7 +1,7 @@
 export HF_HOME="/data/huggingface"
 export TRANSFORMERS_CACHE="/data/huggingface/transformers"
 
-train_config="./configs/train_stage1.yaml"
+train_config="./configs/train_stage1_gemma.yaml"
 
 # 기본 옵션 설정
 num_gpus=2
