@@ -8,6 +8,8 @@ from pathlib import Path
 from tqdm import tqdm
 import os
 import time
+import torch.multiprocessing as mp
+
 # Add custom module path
 sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
 
@@ -34,29 +36,17 @@ def parse_args():
         "in xxx=yyy format will be merged into config file (deprecate), "
         "change to --cfg-options instead.",
     )
-    # --- Deprecated options ---
-    parser.add_argument("--task", type=str, default=None, 
-                    help="(Deprecate) Task to evaluate. Use --mode instead. This option will be removed in a future version.", 
-                    choices=['asr', 'aac'])
-
-    parser.add_argument("--skip_scoring", action='store_false', default=True, 
-                    help="(Deprecate) If True, skip scoring after inference. Use --mode instead. This option will be removed in a future version.")
-    # --- Deprecated options end ---
-    # --- New options ---
     parser.add_argument("--mode", type=str, default="valid_aac", 
                     help="Mode to evaluate. Supports submission and validation modes for ASR and AAC tasks.", 
                     choices=['submission_asr', 'submission_aac', 'valid_asr', 'valid_aac'])
-    # --- New options end ---
-
+    parser.add_argument("--num-gpus", type=int, default=torch.cuda.device_count(), help="Number of GPUs to use")
     args = parser.parse_args()
 
     if args.mode is None:
-        # --- For Previous Version ---
         if args.task is None:
             raise ValueError("Either --task or --mode must be provided")
         args.mode = convert_task_to_mode(args.task, args.skip_scoring)
 
-    # --- Override Previous Version Args ---
     args.task = args.mode.split("_")[1]
     args.make_submission = args.mode.split("_")[0] == "submission"
 
@@ -84,7 +74,7 @@ def get_dataset(dataset_cfg, run_cfg, task):
     test_loader = get_dataloader(testset, run_cfg, is_train=False, use_distributed=False)
     return test_loader
 
-def replace_test_ann_path(cfg):
+def replace_test_ann_path(cfg, args):
     if "test_ann_path" not in cfg.config.datasets.keys():
         if args.task == "asr":
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_asr
@@ -92,27 +82,26 @@ def replace_test_ann_path(cfg):
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_aac
     return cfg
 
-def main(args):
+def inference_worker(rank, args, dataset_split, return_dict):
+    torch.cuda.set_device(rank)
+    device = torch.device("cuda", rank)
+
     cfg = Config(args)
-    cfg = replace_test_ann_path(cfg)
-    # Load models
+    cfg = replace_test_ann_path(cfg, args)
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, tokenizer = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
 
-    # Load data
-    dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
+    dataloader = torch.utils.data.DataLoader(dataset_split, batch_size=cfg.config.run.batch_size_eval, shuffle=False)
 
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)
 
-    # Evaluation
     testset_ids, hyps, refs = [], [], []
     for samples in tqdm(dataloader):
         testset_id = samples["testset_id"]
         testset_ids.extend(testset_id)
 
-        # Preprocess
         samples = prepare_sample(samples, cuda_enabled=torch.cuda.is_available())
         batch_size = samples["spectrogram"].shape[0]
         spectrogram = samples["spectrogram"]
@@ -120,7 +109,6 @@ def main(args):
         audio_padding_mask = samples.get("padding_mask", None)
         speech_embeds, speech_atts = salmonn_preprocessor.encode_speech(spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask)
 
-        # Add prompt embeds + audio embed 
         prompts = [test_prompt[task] for task in samples['task']]
         templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
 
@@ -139,7 +127,6 @@ def main(args):
 
         generate_cfg = cfg.config.generate
 
-        # Generation
         outputs = llama_model.model.generate(
             inputs_embeds=embeds,
             pad_token_id=llama_model.config.eos_token_id,
@@ -162,7 +149,43 @@ def main(args):
             ref = samples["text"]
             refs.extend(ref)
 
+    return_dict[rank] = (testset_ids, hyps, refs)
+
+def main():
+    args = parse_args()
+    random.seed(42)
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+
+    cfg = Config(args)
+    cfg = replace_test_ann_path(cfg, args)
+    dataset = get_dataset(cfg.config.datasets, cfg.config.run, args.task).dataset
+
+    num_gpus = args.num_gpus
     
+    lengths = [len(dataset) // num_gpus] * num_gpus  # 각 분할의 기본 길이
+    lengths[-1] += len(dataset) % num_gpus  # 나머지를 마지막 분할에 추가
+
+    dataset_splits = torch.utils.data.random_split(dataset, lengths)
+
+    manager = mp.Manager()
+    return_dict = manager.dict()
+
+    processes = []
+    for rank in range(num_gpus):
+        p = mp.Process(target=inference_worker, args=(rank, args, dataset_splits[rank], return_dict))
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
+
+    testset_ids, hyps, refs = [], [], []
+    for rank in range(num_gpus):
+        ids, hyp, ref = return_dict[rank]
+        testset_ids.extend(ids)
+        hyps.extend(hyp)
+        refs.extend(ref)
 
     if args.make_submission:
         os.makedirs("submission_results", exist_ok=True)
@@ -170,7 +193,6 @@ def main(args):
     else:
         if args.task == 'asr':
             compute_wer(hyps, refs)
-            
         elif args.task == 'aac':
             compute_spider(hyps, refs)
         os.makedirs("valid_results", exist_ok=True)
@@ -180,7 +202,5 @@ def main(args):
     result_df.to_csv(file_name, index=False)
 
 if __name__ == '__main__':
-    args = parse_args()
-
-    random.seed(42)
-    main(args)
+    mp.set_start_method('spawn')
+    main()

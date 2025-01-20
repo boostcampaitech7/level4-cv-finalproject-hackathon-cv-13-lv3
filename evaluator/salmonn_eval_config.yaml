@@ -70,8 +70,8 @@ datasets:
 
 run:
   batch_size_eval: 3
-  num_workers: 8
+  num_workers: 4
   device: "cuda"
-  # world-size: 2
-  # dist_url: "env://"
-  # distributed: True
+  world-size: 2
+  dist_url: "env://"
+  distributed: True
