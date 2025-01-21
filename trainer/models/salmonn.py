@@ -20,7 +20,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
+from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 from peft import LoraConfig, TaskType, get_peft_model
 
 from .Qformer import BertConfig, BertLMHeadModel
@@ -113,6 +113,13 @@ class SALMONN(nn.Module):
         self.llama_tokenizer.add_special_tokens({'pad_token': '[PAD]'}) # 패딩 토큰 추가
         self.llama_tokenizer.padding_side = "right" # 패딩 토큰을 오른쪽에 추가
 
+        # Bit config 설정
+        # bnb_config = BitsAndBytesConfig(
+        #     load_in_4bit=True,
+        #     bnb_4bit_quant_type="nf4", # 모델 가중치 로드
+        #     bnb_4bit_compute_dtype=torch.float16, # 계산에 사용되는 자료형
+        # )
+
         if not only_preprocessor: # 전처리 모드가 아닌 경우 (아마 Audio Encoder가 Preprocessor인 듯)
             logging.info('Loading LLaMA Model')
             # 양자화를 사용할 경우
@@ -129,6 +136,7 @@ class SALMONN(nn.Module):
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
+                    # quantization_config=bnb_config
                     # attn_implementation="flash_attention_2", # Flash Attention 사용
                 )
 
@@ -146,6 +154,7 @@ class SALMONN(nn.Module):
                     r=lora_rank, 
                     lora_alpha=lora_alpha, 
                     lora_dropout=lora_dropout,
+                    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"] # 어떤 가중치에 adapter를 적용할지 결정
                 )
                 # LLM에 LoRA 적용
                 self.llama_model = get_peft_model(self.llama_model, self.peft_config)
