@@ -10,6 +10,47 @@ from beats.backbone import MultiheadAttention
 from modeling_llama import LlamaConfig, LlamaAttention, apply_rotary_pos_emb
 from Qformer import BertSelfAttention, BertSelfOutput, BertAttention
 
+def flash_attention_forward(
+    query_layer,
+    key_layer,
+    value_layer,
+    attention_mask=None,
+    head_mask=None,
+    output_attentions=False,
+    dropout_p=0.0,
+    is_causal=False,
+    scale=None,
+):
+    """공통 Flash Attention forward 함수"""
+    with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=True):
+        # 기본 attention 계산
+        context_layer = F.scaled_dot_product_attention(
+            query_layer,
+            key_layer,
+            value_layer,
+            attn_mask=attention_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale
+        )
+
+        # attention weights가 필요한 경우에만 계산
+        if output_attentions or head_mask is not None:
+            scale_factor = 1 / math.sqrt(query_layer.size(-1)) if scale is None else scale
+            attn_weights = torch.matmul(query_layer, key_layer.transpose(-2, -1)) * scale_factor
+            
+            if attention_mask is not None:
+                attn_weights = attn_weights + attention_mask
+            
+            attn_weights = F.softmax(attn_weights, dim=-1)
+            
+            if head_mask is not None:
+                attn_weights = attn_weights * head_mask
+        else:
+            attn_weights = None
+
+        return context_layer, attn_weights
+
 class FlashWhisperAttention(WhisperAttention):
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, is_decoder: bool = False, bias: bool = True):
         super().__init__(embed_dim, num_heads, dropout, is_decoder, bias)
@@ -54,34 +95,23 @@ class FlashWhisperAttention(WhisperAttention):
         key_states = key_states.view(bsz, self.num_heads, -1, self.head_dim)
         value_states = value_states.view(bsz, self.num_heads, -1, self.head_dim)
 
-        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=True):
-            # 항상 Flash Attention 사용
-            attn_output = F.scaled_dot_product_attention(
-                query_states,
-                key_states,
-                value_states,
-                attn_mask=attention_mask,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=self.is_decoder
-            )
-
-            # weights가 필요한 경우에만 QK^T 계산
-            if output_attentions or layer_head_mask is not None:
-                attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1)) / math.sqrt(self.head_dim)
-                if attention_mask is not None:
-                    attn_weights = attn_weights + attention_mask
-                attn_weights = F.softmax(attn_weights, dim=-1)
-                if layer_head_mask is not None:
-                    attn_weights = attn_weights * layer_head_mask
-            else:
-                attn_weights = None
+        context_layer, attention_weights = flash_attention_forward(
+            query_states,
+            key_states,
+            value_states,
+            attention_mask=attention_mask,
+            head_mask=layer_head_mask,
+            output_attentions=output_attentions,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=self.is_decoder
+        )
 
         # [B, H, T, D] -> [B, T, H*D]
-        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = context_layer.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)
         attn_output = self.out_proj(attn_output)
 
-        return attn_output, attn_weights, past_key_value
+        return attn_output, attention_weights, past_key_value
 
 class FlashBEATsAttention(MultiheadAttention):
     def __init__(
@@ -169,32 +199,22 @@ class FlashBEATsAttention(MultiheadAttention):
         k_4d = k.view(bsz, self.num_heads, src_len, self.head_dim)
         v_4d = v.view(bsz, self.num_heads, src_len, self.head_dim)
 
-        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=True):
-            attn_output = F.scaled_dot_product_attention(
-                q_4d,
-                k_4d,
-                v_4d,
-                attn_mask=attn_mask,
-                dropout_p=dropout
-            )
-
-            if need_weights:
-                attn_weights = torch.matmul(q_4d, k_4d.transpose(-2, -1)) / math.sqrt(self.head_dim)
-                if attn_mask is not None:
-                    attn_weights = attn_weights + attn_mask
-                attn_weights = F.softmax(attn_weights, dim=-1)
-                
-                if not need_head_weights:
-                    attn_weights = attn_weights.mean(dim=1)
-            else:
-                attn_weights = None
+        context_layer, attention_weights = flash_attention_forward(
+            q_4d,
+            k_4d,
+            v_4d,
+            attention_mask=attn_mask,
+            head_mask=None,
+            output_attentions=need_weights,
+            dropout_p=dropout
+        )
 
         # [B, H, T, D] -> [T, B, E]
-        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = context_layer.transpose(1, 2).contiguous()
         attn_output = attn_output.view(tgt_len, bsz, embed_dim)
         attn_output = self.out_proj(attn_output)
 
-        return attn_output, attn_weights, None
+        return attn_output, attention_weights, None
     
     
 class FlashLlamaAttention(LlamaAttention):
@@ -234,31 +254,16 @@ class FlashLlamaAttention(LlamaAttention):
 
         past_key_value = (key_states, value_states) if use_cache else None
 
-        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=True):
-            # Flash Attention 사용
-            attn_output = F.scaled_dot_product_attention(
-                query_states,
-                key_states,
-                value_states,
-                attn_mask=attention_mask,
-                dropout_p=0.0,  # LLaMA는 dropout 사용하지 않음
-                scale=None,  # scaling은 내부적으로 처리됨
-            )
-
-            # weights가 필요한 경우에만 QK^T 계산
-            if output_attentions:
-                attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-                if attention_mask is not None:
-                    if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                        raise ValueError(
-                            f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                        )
-                    attn_weights = attn_weights + attention_mask
-                    attn_weights = torch.max(attn_weights, torch.tensor(torch.finfo(attn_weights.dtype).min))
-                # upcast attention to fp32
-                attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-            else:
-                attn_weights = None
+        context_layer, attention_weights = flash_attention_forward(
+            query_states,
+            key_states,
+            value_states,
+            attention_mask=attention_mask,
+            head_mask=None,
+            output_attentions=output_attentions,
+            dropout_p=0.0,  # LLaMA는 dropout 사용하지 않음
+            scale=None,  # scaling은 내부적으로 처리됨
+        )
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
@@ -270,7 +275,7 @@ class FlashLlamaAttention(LlamaAttention):
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, attn_weights, past_key_value
+        return attn_output, attention_weights, past_key_value
     
 
 class FlashBertSelfAttention(BertSelfAttention):
@@ -307,15 +312,16 @@ class FlashBertSelfAttention(BertSelfAttention):
 
         past_key_value = (key_layer, value_layer)
 
-        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=True):
-            context_layer = F.scaled_dot_product_attention(
-                query_layer,
-                key_layer,
-                value_layer,
-                attn_mask=attention_mask,
-                dropout_p=self.dropout.p if self.training else 0.0,
-                scale=1.0 / math.sqrt(self.attention_head_size)
-            )
+        context_layer, attention_weights = flash_attention_forward(
+            query_layer,
+            key_layer,
+            value_layer,
+            attention_mask=attention_mask,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            dropout_p=self.dropout.p if self.training else 0.0,
+            scale=1.0 / math.sqrt(self.attention_head_size)
+        )
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
