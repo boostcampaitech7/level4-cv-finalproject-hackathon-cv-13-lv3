@@ -1,3 +1,6 @@
+# https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+# https://pytorch.org/tutorials/intermediate/scaled_dot_product_attention_tutorial.html#explicit-dispatcher-control
+
 import torch
 from torch import Tensor, nn
 import torch.nn as nn
@@ -5,10 +8,10 @@ import torch.nn.functional as F
 from typing import Optional, Tuple, Dict
 import math
 
-from modeling_whisper import WhisperAttention
-from beats.backbone import MultiheadAttention
-from modeling_llama import LlamaConfig, LlamaAttention, apply_rotary_pos_emb
-from Qformer import BertSelfAttention, BertSelfOutput, BertAttention
+from .modeling_whisper import WhisperAttention
+from .beats.backbone import MultiheadAttention, TransformerEncoder
+from .modeling_llama import LlamaConfig, LlamaAttention, apply_rotary_pos_emb
+from .Qformer import BertSelfAttention, BertSelfOutput, BertAttention
 
 def flash_attention_forward(
     query_layer,
@@ -54,6 +57,7 @@ def flash_attention_forward(
 class FlashWhisperAttention(WhisperAttention):
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, is_decoder: bool = False, bias: bool = True):
         super().__init__(embed_dim, num_heads, dropout, is_decoder, bias)
+        # bias 파라미터는 projection layers에서만 사용되고 클래스 속성으로는 저장되지 않음
         
     def forward(
         self,
@@ -113,49 +117,36 @@ class FlashWhisperAttention(WhisperAttention):
 
         return attn_output, attention_weights, past_key_value
 
-class FlashBEATsAttention(MultiheadAttention):
-    def __init__(
-            self,
-            embed_dim,
-            num_heads,
-            kdim=None,
-            vdim=None,
-            dropout=0.0,
-            bias=True,
-            add_bias_kv=False,
-            add_zero_attn=False,
-            self_attention=False,
-            encoder_decoder_attention=False,
-            q_noise=0.0,
-            qn_block_size=8,
-            has_relative_attention_bias=False,
-            num_buckets=32,
-            max_distance=128,
-            gru_rel_pos=False,
-            rescale_init=False,
-    ):
-        super().__init__(
-            embed_dim,
-            num_heads,
-            kdim,
-            vdim,
-            dropout,
-            bias,
-            add_bias_kv,
-            add_zero_attn,
-            self_attention,
-            encoder_decoder_attention,
-        )
-        self.k_proj.bias = None
-        self.q_head_dim = embed_dim // num_heads
-        self.scaling = self.q_head_dim ** -0.5
-        
-        # 필요한 속성들 추가
-        self.onnx_trace = False
-        self.tpu = False
-        self.encoder_decoder_attention = encoder_decoder_attention
-        self.self_attention = self_attention
+class FlashBEATsAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, kdim=None, vdim=None, dropout=0.0, bias=True,
+                 add_bias_kv=False, add_zero_attn=False, self_attention=False,
+                 encoder_decoder_attention=False):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.kdim = kdim if kdim is not None else embed_dim
+        self.vdim = vdim if vdim is not None else embed_dim
+        self.num_heads = num_heads
+        self.dropout = dropout  # dropout 속성 추가
         self.head_dim = embed_dim // num_heads
+        assert self.head_dim * num_heads == self.embed_dim
+
+        self.self_attention = self_attention
+        self.encoder_decoder_attention = encoder_decoder_attention
+
+        self.scaling = self.head_dim ** -0.5
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.k_proj = nn.Linear(self.kdim, embed_dim, bias=bias)
+        self.v_proj = nn.Linear(self.vdim, embed_dim, bias=bias)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+        if add_bias_kv:
+            self.bias_k = nn.Parameter(torch.Tensor(1, 1, embed_dim))
+            self.bias_v = nn.Parameter(torch.Tensor(1, 1, embed_dim))
+        else:
+            self.bias_k = self.bias_v = None
+
+        self.add_zero_attn = add_zero_attn
 
     def forward(
         self,
@@ -339,20 +330,85 @@ class FlashBertAttention(BertAttention):
 
 def replace_attention_with_flash_attention(model):
     """모든 attention 모듈을 Flash Attention으로 교체"""
+    # 먼저 모든 모듈과 경로를 리스트로 수집
+    attention_modules = []
     for name, module in model.named_modules():
-        # BERT Attention 교체
-        if isinstance(module, BertAttention):
+        if isinstance(module, (BertAttention, LlamaAttention, WhisperAttention, MultiheadAttention)):
+            attention_modules.append((name, module))
+    
+    # 수집된 모듈들을 순회하면서 교체
+    for name, module in attention_modules:
+        parent_name = '.'.join(name.split('.')[:-1])
+        parent = model
+        for part in parent_name.split('.'):
+            if part:
+                parent = getattr(parent, part)
+        
+        # BEATs Attention 교체
+        if isinstance(module, MultiheadAttention):
+            # 상위 TransformerEncoder에서 attention_dropout 값을 가져옴
+            attention_dropout = 0.0  # BEATs의 기본값
+            for n, m in model.named_modules():
+                if isinstance(m, TransformerEncoder):
+                    attention_dropout = getattr(m, 'attention_dropout', 0.0)
+                    break
+            
+            flash_attention = FlashBEATsAttention(
+                module.embed_dim,
+                module.num_heads,
+                module.kdim,
+                module.vdim,
+                attention_dropout,  # 상위 모듈에서 가져온 dropout 값 사용
+                True,  # BEATs는 항상 bias 사용
+                False,  # BEATs는 bias_k 사용하지 않음
+                False,  # BEATs는 add_zero_attn 사용하지 않음
+                True,  # BEATs는 self-attention 사용
+                False,  # BEATs는 encoder-decoder attention 사용하지 않음
+            )
+            
+            # 기존 projection layers와 bias 복사
+            flash_attention.q_proj = module.q_proj
+            flash_attention.k_proj = module.k_proj
+            flash_attention.v_proj = module.v_proj
+            flash_attention.out_proj = module.out_proj
+            
+            # relative position bias 관련 속성 복사 (있는 경우)
+            if hasattr(module, 'has_relative_attention_bias'):
+                flash_attention.has_relative_attention_bias = module.has_relative_attention_bias
+                if module.has_relative_attention_bias:
+                    flash_attention.relative_attention_bias = module.relative_attention_bias
+                    flash_attention.num_buckets = module.num_buckets
+                    flash_attention.max_distance = module.max_distance
+            
+            # GRU relative position 관련 속성 복사 (있는 경우)
+            if hasattr(module, 'gru_rel_pos') and module.gru_rel_pos:
+                flash_attention.gru_rel_pos = module.gru_rel_pos
+                flash_attention.grep_linear = module.grep_linear
+                flash_attention.grep_a = module.grep_a
+            
+            last_name = name.split('.')[-1]
+            setattr(parent, last_name, flash_attention)
+            
+        # Whisper Attention 교체
+        elif isinstance(module, WhisperAttention):
             parent_name = '.'.join(name.split('.')[:-1])
             parent = model
             for part in parent_name.split('.'):
                 if part:
                     parent = getattr(parent, part)
                     
-            flash_attention = FlashBertAttention(module.self.config, is_cross_attention=module.self.is_cross_attention)
-            flash_attention.self.query = module.self.query
-            flash_attention.self.key = module.self.key
-            flash_attention.self.value = module.self.value
-            flash_attention.output = module.output
+            flash_attention = FlashWhisperAttention(
+                module.embed_dim,
+                module.num_heads,
+                module.dropout,
+                module.is_decoder,
+                True  # bias는 기본값 True 사용
+            )
+            # projection layers 복사
+            flash_attention.q_proj = module.q_proj
+            flash_attention.k_proj = module.k_proj
+            flash_attention.v_proj = module.v_proj
+            flash_attention.out_proj = module.out_proj
             
             last_name = name.split('.')[-1]
             setattr(parent, last_name, flash_attention)
@@ -375,53 +431,28 @@ def replace_attention_with_flash_attention(model):
             last_name = name.split('.')[-1]
             setattr(parent, last_name, flash_attention)
             
-        # Whisper Attention 교체
-        elif isinstance(module, WhisperAttention):
+        # BERT Attention 교체
+        elif isinstance(module, BertAttention):
             parent_name = '.'.join(name.split('.')[:-1])
             parent = model
             for part in parent_name.split('.'):
                 if part:
                     parent = getattr(parent, part)
                     
-            flash_attention = FlashWhisperAttention(
-                module.embed_dim,
-                module.num_heads,
-                module.dropout,
-                module.is_decoder,
-                module.bias
-            )
-            flash_attention.q_proj = module.q_proj
-            flash_attention.k_proj = module.k_proj
-            flash_attention.v_proj = module.v_proj
-            flash_attention.out_proj = module.out_proj
+            # BertAttention의 is_cross_attention 확인
+            is_cross = False
+            if hasattr(module, 'self') and hasattr(module.self, 'key'):
+                # key layer의 입력/출력 차원이 다르면 cross attention
+                is_cross = (module.self.key.in_features != module.self.key.out_features)
             
-            last_name = name.split('.')[-1]
-            setattr(parent, last_name, flash_attention)
-            
-        # BEATs Attention 교체
-        elif isinstance(module, MultiheadAttention):
-            parent_name = '.'.join(name.split('.')[:-1])
-            parent = model
-            for part in parent_name.split('.'):
-                if part:
-                    parent = getattr(parent, part)
-                    
-            flash_attention = FlashBEATsAttention(
-                module.embed_dim,
-                module.num_heads,
-                module.kdim,
-                module.vdim,
-                module.dropout,
-                module.bias,
-                module.add_bias_kv,
-                module.add_zero_attn,
-                module.self_attention,
-                module.encoder_decoder_attention
+            flash_attention = FlashBertAttention(
+                module.self.config,
+                is_cross_attention=is_cross  # 실제 cross attention 여부 전달
             )
-            flash_attention.q_proj = module.q_proj
-            flash_attention.k_proj = module.k_proj
-            flash_attention.v_proj = module.v_proj
-            flash_attention.out_proj = module.out_proj
+            
+            # 기존 self attention과 output 모듈 복사
+            flash_attention.self = module.self
+            flash_attention.output = module.output
             
             last_name = name.split('.')[-1]
             setattr(parent, last_name, flash_attention)

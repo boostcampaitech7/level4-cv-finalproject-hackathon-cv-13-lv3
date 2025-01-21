@@ -28,7 +28,7 @@ from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
 from .utils import StoppingCriteriaSub
-from attention_torch import replace_attention_with_flash_attention
+from .attention_torch import replace_attention_with_flash_attention
 
 
 class SALMONN(nn.Module):
