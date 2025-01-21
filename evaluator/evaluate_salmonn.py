@@ -18,6 +18,46 @@ from utils import get_dataloader, prepare_sample
 from metrics import compute_wer, compute_spider
 from inference_timer import InferenceTimer
 
+from dist_utils import get_rank, init_distributed_mode, is_dist_avail_and_initialized, get_world_size, is_main_process
+
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+def save_result(testset_ids, hyps, result_dir, mode):
+    os.makedirs(result_dir, exist_ok=True)
+    
+    # Save rank-specific results with sorting
+    result_file = os.path.join(result_dir, f"{mode}_rank{get_rank()}.csv")
+    rank_df = pd.DataFrame({
+        "testset_id": testset_ids, 
+        "text": hyps
+    })
+    # Sort by testset_id to ensure consistent ordering
+    rank_df = rank_df.sort_values('testset_id')
+    rank_df.to_csv(result_file, index=False)
+
+    if is_dist_avail_and_initialized():
+        dist.barrier()
+
+    if is_main_process():
+        merged_df = pd.DataFrame()
+        for rank in range(get_world_size()):
+            rank_file = os.path.join(result_dir, f"{mode}_rank{rank}.csv")
+            rank_df = pd.read_csv(rank_file)
+            merged_df = pd.concat([merged_df, rank_df], ignore_index=True)
+        
+        # Remove duplicates and ensure ordering
+        merged_df = merged_df.drop_duplicates(subset=['testset_id'], keep='first')
+        merged_df = merged_df.sort_values('testset_id')
+        
+        final_file = os.path.join(result_dir, f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{mode}.csv")
+        merged_df.to_csv(final_file, index=False)
+        
+        # Cleanup
+        for rank in range(get_world_size()):
+            rank_file = os.path.join(result_dir, f"{mode}_rank{rank}.csv")
+            os.remove(rank_file)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -44,7 +84,7 @@ def parse_args():
                     help="(Deprecate) If True, skip scoring after inference. Use --mode instead. This option will be removed in a future version.")
     # --- Deprecated options end ---
     # --- New options ---
-    parser.add_argument("--mode", type=str, default="valid_aac", 
+    parser.add_argument("--mode", type=str, default="submission_asr", 
                     help="Mode to evaluate. Supports submission and validation modes for ASR and AAC tasks.", 
                     choices=['submission_asr', 'submission_aac', 'valid_asr', 'valid_aac'])
     parser.add_argument("--timer", action='store_true', default=False,
@@ -79,12 +119,11 @@ def convert_task_to_mode(task, skip_scoring):
     
     raise ValueError(f"Invalid task: {task} | {skip_scoring}")
 
-def get_dataset(dataset_cfg, run_cfg, task):
+def get_dataset(dataset_cfg, run_cfg, task, use_distributed):
     testset = SALMONNTestDataset(
         dataset_cfg.prefix, dataset_cfg.test_ann_path, dataset_cfg.whisper_path, task
     )
-
-    test_loader = get_dataloader(testset, run_cfg, is_train=False, use_distributed=False)
+    test_loader = get_dataloader(testset, run_cfg, is_train=False, use_distributed=use_distributed)
     return test_loader
 
 def replace_test_ann_path(cfg):
@@ -110,15 +149,23 @@ def register_hooks(preprocessor, llm):
     return timer
 
 def main(args):
+
     cfg = Config(args)
     cfg = replace_test_ann_path(cfg)
+    init_distributed_mode(cfg.config.run) # 분산학습 환경 설정
+
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, tokenizer = load_model(salmonn_preprocessor)
+
+    if cfg.config.run.use_distributed == True:
+        llama_model = DDP(llama_model, device_ids=[cfg.config.run.gpu]).module
+
     salmonn_preprocessor.llama_model = llama_model
 
+        
     # Load data
-    dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
+    dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task, cfg.config.run.use_distributed)
 
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)
@@ -182,21 +229,18 @@ def main(args):
             ref = samples["text"]
             refs.extend(ref)
 
-    # Save results
+    if is_dist_avail_and_initialized():
+            dist.barrier()       
+
+    # In main code:
     if args.make_submission:
-        os.makedirs("submission_results", exist_ok=True)
-        file_name = f"submission_results/{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.mode}.csv"
+        save_result(testset_ids, hyps, "submission_results", args.mode)
     else:
         if args.task == 'asr':
             compute_wer(hyps, refs)
-            
         elif args.task == 'aac':
             compute_spider(hyps, refs)
-        os.makedirs("valid_results", exist_ok=True)
-        file_name = f"valid_results/{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.mode}.csv"
-
-    result_df = pd.DataFrame({"testset_id": testset_ids, "text": hyps})
-    result_df.to_csv(file_name, index=False)
+        save_result(testset_ids, hyps, "valid_results", args.mode)
     
     if args.timer:
         timer.save_measurement(
