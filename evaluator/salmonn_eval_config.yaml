@@ -22,7 +22,7 @@ model:
   token: "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" # Use hf token to access gated repositories
   only_preprocessor: False
 
-  ckpt: "/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/llama-3.2-1B-1percent-stage1-whisper-tiny_5epoch/202501192319/checkpoint_best.pth" #/data/dataset/pretrained/salmonn_v1.pth" # model used for decoding
+  ckpt: "/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-Llama-3.2-3B-Instruct-5epoch/checkpoint_best.pth" #/data/dataset/pretrained/salmonn_v1.pth" # model used for decoding
 
   freeze_whisper: True
   freeze_beats: True
