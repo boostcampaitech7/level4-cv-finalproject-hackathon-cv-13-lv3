@@ -20,7 +20,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
+from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from peft import LoraConfig, TaskType, get_peft_model
 
 from .Qformer import BertConfig, BertLMHeadModel
@@ -28,6 +28,7 @@ from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
 from .utils import StoppingCriteriaSub
+from .attention_torch import replace_attention_with_flash_attention
 
 
 class SALMONN(nn.Module):
@@ -113,13 +114,6 @@ class SALMONN(nn.Module):
         self.llama_tokenizer.add_special_tokens({'pad_token': '[PAD]'}) # 패딩 토큰 추가
         self.llama_tokenizer.padding_side = "right" # 패딩 토큰을 오른쪽에 추가
 
-        # Bit config 설정
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4", # 모델 가중치 로드
-            bnb_4bit_compute_dtype=torch.float16, # 계산에 사용되는 자료형
-        )
-
         if not only_preprocessor: # 전처리 모드가 아닌 경우 (아마 Audio Encoder가 Preprocessor인 듯)
             logging.info('Loading LLaMA Model')
             # 양자화를 사용할 경우
@@ -136,11 +130,10 @@ class SALMONN(nn.Module):
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
-                    # quantization_config=bnb_config,
-                    # attn_implementation= "flash_attention_2",  # Flash Attention 사용
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
+            self.llama_model = replace_attention_with_flash_attention(self.llama_model)
             self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
             for name, param in self.llama_model.named_parameters():
                 param.requires_grad = False # LLM Freeze
@@ -154,7 +147,6 @@ class SALMONN(nn.Module):
                     r=lora_rank, 
                     lora_alpha=lora_alpha, 
                     lora_dropout=lora_dropout,
-                    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"] # 어떤 가중치에 adapter를 적용할지 결정
                 )
                 # LLM에 LoRA 적용
                 self.llama_model = get_peft_model(self.llama_model, self.peft_config)
@@ -165,12 +157,14 @@ class SALMONN(nn.Module):
         assert whisper_path
         logging.info('Loading Whisper Model')
         self.speech_encoder = WhisperModel.from_pretrained(whisper_path).encoder
+        # Flash Attention으로 변환
+        self.speech_encoder = replace_attention_with_flash_attention(self.speech_encoder)
         # Whisper Encoder의 출력을 정규화하기 위한 LayerNorm 추가 (Feature Normalization) - 학습 가능한 Layer
         self.ln_speech = nn.LayerNorm(self.speech_encoder.config.d_model)
         if freeze_whisper:
+            self.speech_encoder.eval() # 학습할 필요가 없으니 평가 모드로 설정
             for name, param in self.speech_encoder.named_parameters():
                 param.requires_grad = False # Whisper Freeze
-            self.speech_encoder.eval() # 학습할 필요가 없으니 평가 모드로 설정
             logging.info("freeze Whisper")
         
         # BEATs 모델 로드 (Huggingface가 아닌 MS에서 배포만 모델로 load하는 방식이 다름)
@@ -181,11 +175,16 @@ class SALMONN(nn.Module):
             beats_cfg = BEATsConfig(beats_ckpt['cfg'])
             self.beats = BEATs(beats_cfg)
             self.beats.load_state_dict(beats_ckpt['model'])
+            
+            # Flash Attention으로 변환
+            logging.info('Converting BEATs to Flash Attention')
+            self.beats = replace_attention_with_flash_attention(self.beats)
+            
             self.ln_audio = nn.LayerNorm(self.beats.cfg.encoder_embed_dim) # 학습 가능한 LayerNorm 추가
             if freeze_beats:
+                self.beats.eval() # 학습할 필요가 없으니 평가 모드로 설정
                 for name, param in self.beats.named_parameters():
                     param.requires_grad = False # BEATs Freeze
-                self.beats.eval() # 학습할 필요가 없으니 평가 모드로 설정
                 logging.info("freeze BEATs")
 
         if self.use_speech_Qformer:
@@ -199,6 +198,9 @@ class SALMONN(nn.Module):
                 self.speech_Qformer, self.speech_query_tokens = self.init_speech_Qformer(
                     num_query_token=num_speech_query_token, speech_width=self.speech_encoder.config.d_model
                 )
+            
+            # Flash Attention으로 변환
+            self.speech_Qformer = replace_attention_with_flash_attention(self.speech_Qformer)
                 
             # Qformer로 BERT 모델을 가져온 뒤 필요 없는 부분 삭제하고 Q-Former 부분만 사용
             # Embedding layer 제거
