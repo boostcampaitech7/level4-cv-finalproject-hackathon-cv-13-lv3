@@ -14,7 +14,7 @@
 project_name : 'Salmonn'
 model:
   # paths
-  llama_path: "meta-llama/Llama-3.2-3B-Instruct"
+  llama_path: "google/gemma-2-2b-it"
   whisper_path: "openai/whisper-tiny" #"openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
@@ -56,14 +56,14 @@ datasets:
   valid_ann_path: "/data/dataset/stage1_valid_01.json"
   test_ann_path: "/data/dataset/test_aac.json"
 
-  whisper_path: "openai/whisper-tiny" # "openai/whisper-large-v2"
+  whisper_path: "openai/whisper-small" # "openai/whisper-large-v2"
 
 run:
   # log & settings
   seed: 42
   output_dir: "outputs_stage1_only"
   evaluate: False # if True, only evaluate model on test data
-  exp_name: "llama-3.2-1B-1percent-stage1"
+  exp_name: "gemma-2-2b-it-1percent-stage1"
 
   log_freq: 5
   epoch_based: False

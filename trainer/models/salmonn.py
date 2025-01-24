@@ -146,6 +146,7 @@ class SALMONN(nn.Module):
                     r=lora_rank, 
                     lora_alpha=lora_alpha, 
                     lora_dropout=lora_dropout,
+                    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"] # 어떤 가중치에 adapter를 적용할지 결정 (For Gemma)
                 )
                 # LLM에 LoRA 적용
                 self.llama_model = get_peft_model(self.llama_model, self.peft_config)

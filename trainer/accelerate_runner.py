@@ -14,7 +14,7 @@ from accelerate import Accelerator
 import wandb
 
 from logger import MetricLogger, SmoothedValue
-from utils import get_dataloader, prepare_sample
+from utils import get_accelerator_dataloader, prepare_sample
 from optims import get_optimizer, LinearWarmupCosineLRScheduler
 from dist_utils import main_process, is_main_process
 
@@ -54,9 +54,9 @@ class AccelerateRunner:
         self._model = model
         
         # dataloaders
-        self.train_loader = get_dataloader(datasets["train"], self.config.config.run, is_train=True)
-        self.valid_loader = get_dataloader(datasets["valid"], self.config.config.run, is_train=False)
-        self.test_loader = get_dataloader(datasets["test"], self.config.config.run, is_train=False)
+        self.train_loader = get_accelerator_dataloader(datasets["train"], self.config.config.run, is_train=True)
+        self.valid_loader = get_accelerator_dataloader(datasets["valid"], self.config.config.run, is_train=False)
+        self.test_loader = get_accelerator_dataloader(datasets["test"], self.config.config.run, is_train=False)
 
         # optimizer & scheduler
         self.iters_per_epoch = len(self.train_loader) if self.config.config.run.epoch_based else self.config.config.run.iters_per_epoch
@@ -72,7 +72,7 @@ class AccelerateRunner:
         )
 
         # Accelerate setup
-        self.accelerator = Accelerator(mixed_precision='fp16' if self.config.config.run.get("amp", False) else 'no')
+        self.accelerator = Accelerator()  # config file의 설정을 자동으로 사용
         self.model, self.optimizer, self.train_loader, self.valid_loader, self.test_loader, self.scheduler = self.accelerator.prepare(
             self._model, self.optimizer, self.train_loader, self.valid_loader, self.test_loader, self.scheduler
         )
@@ -99,11 +99,20 @@ class AccelerateRunner:
         )
         header = "Train: data epoch: [{}]".format(epoch)
 
+        # DataLoader를 iterator로 변환
+        train_iter = iter(self.train_loader)
+
         for i in metric_logger.log_every(range(self.iters_per_epoch), self.config.config.run.log_freq, header=header, logger=self.log_writter, start_step=epoch*self.iters_per_epoch):
             if i >= self.iters_per_epoch:
                 break
             
-            samples = next(self.train_loader)
+            try:
+                samples = next(train_iter)
+            except StopIteration:
+                # 데이터를 모두 소진했을 경우 iterator 재생성
+                train_iter = iter(self.train_loader)
+                samples = next(train_iter)
+
             samples = prepare_sample(samples, cuda_enabled=self.cuda_enabled)
 
             if not self.dryrun:
@@ -159,8 +168,9 @@ class AccelerateRunner:
             if not self.dryrun:
                 forward_result = model(samples, verbose=True)
                 loss = forward_result.get("loss", 0)
-                correct = forward_result.get("correct", 0)
+                correct = forward_result.get("correct", 0) 
                 total = forward_result.get("total", 1)
+                
                 res = {
                     "id": samples["id"],
                     "ground_truth": samples["text"],
@@ -215,8 +225,8 @@ class AccelerateRunner:
             res["correct"] += item_correct
             res["n_token"] += item_n_token
 
-        # Gather all results across all processes
-        if self.accelerator.is_distributed:
+        # Gather all results across all processes (원래 runner에서 사용하는 방식이 더 빠를 수 있음)
+        if self.accelerator.use_distributed:
             for k in res:
                 res[k] = self.accelerator.gather(res[k]).sum()
 
@@ -227,14 +237,31 @@ class AccelerateRunner:
         return ret
 
     def save_result(self, result, result_dir, filename):
+        # 각 프로세스의 결과 저장
+        result_file = os.path.join(result_dir, f"{filename}_rank{self.accelerator.process_index}.json")
+        try:
+            json.dump(result, open(result_file, "w"), ensure_ascii=False)
+        except Exception as e:
+            json.dump(result, open(result_file, "w", encoding="utf-8"), ensure_ascii=False)
+        
+        self.accelerator.wait_for_everyone()
+        
+        # 메인 프로세스에서 결과 병합
         if self.accelerator.is_main_process:
+            merged_result = []
+            for rank in range(self.accelerator.num_processes):
+                rank_file = os.path.join(result_dir, f"{filename}_rank{rank}.json")
+                with open(rank_file, "r", encoding="utf-8") as f:
+                    merged_result.extend(json.load(f))
+                
+            # 최종 결과 저장
             final_result_file = os.path.join(result_dir, f"{filename}.json")
-            try:
-                json.dump(result, open(final_result_file, "w"), ensure_ascii=False)
-            except Exception as e:
-                logging.warning(f"Error saving {final_result_file}. Error: {e}")
-                json.dump(result, open(final_result_file, "w", encoding="utf-8"), ensure_ascii=False)
+            json.dump(merged_result, open(final_result_file, "w", encoding="utf-8"), ensure_ascii=False)
             print(f"Result file saved to {final_result_file}")
+            
+            # 임시 파일 삭제
+            for rank in range(self.accelerator.num_processes):
+                os.remove(os.path.join(result_dir, f"{filename}_rank{rank}.json"))
 
     def train(self):
         start_time = time.time()
@@ -267,7 +294,7 @@ class AccelerateRunner:
 
             self.save_checkpoint(cur_epoch, is_best=False)
 
-            if self.accelerator.is_distributed:
+            if self.accelerator.use_distributed:
                 dist.barrier()
 
         # testing phase
