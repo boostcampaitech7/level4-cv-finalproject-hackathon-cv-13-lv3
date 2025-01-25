@@ -72,7 +72,9 @@ class AccelerateRunner:
         )
 
         # Accelerate setup
-        self.accelerator = Accelerator()  # config file의 설정을 자동으로 사용
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=self.config.config.run.accum_grad_iters
+        )  # config file의 설정을 자동으로 사용
         self.model, self.optimizer, self.train_loader, self.valid_loader, self.test_loader, self.scheduler = self.accelerator.prepare(
             self._model, self.optimizer, self.train_loader, self.valid_loader, self.test_loader, self.scheduler
         )
@@ -116,8 +118,6 @@ class AccelerateRunner:
             samples = prepare_sample(samples, cuda_enabled=self.cuda_enabled)
 
             if not self.dryrun:
-                self.scheduler.step(cur_epoch=epoch, cur_step=i)
-
                 # Accelerate handles the mixed precision automatically
                 loss = self.model(samples)["loss"]
                 
@@ -126,6 +126,7 @@ class AccelerateRunner:
                 if (i + 1) % self.config.config.run.accum_grad_iters == 0:
                     self.optimizer.step()
                     self.optimizer.zero_grad()
+                    self.scheduler.step(cur_epoch=epoch, cur_step=i)
 
                 metric_logger.update(loss=loss.item())
                 metric_logger.update(lr=self.optimizer.param_groups[0]["lr"])
@@ -136,6 +137,10 @@ class AccelerateRunner:
                         "train/loss": loss.item(), 
                         "train/lr": self.optimizer.param_groups[0]["lr"]
                     })
+
+                # 배치 처리 후 메모리 정리 추가
+                if self.cuda_enabled and (i + 1) % self.config.config.run.accum_grad_iters == 0:
+                    torch.cuda.empty_cache()
             else:
                 metric_logger.update(loss=0.0)
                 metric_logger.update(lr=0.0)
