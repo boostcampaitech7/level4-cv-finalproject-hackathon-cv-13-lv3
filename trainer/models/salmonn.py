@@ -29,6 +29,7 @@ from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
 from .utils import StoppingCriteriaSub
 
+from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
 class SALMONN(nn.Module):
     @classmethod # static method (cls를 통해 클래스에 접근)
@@ -94,6 +95,7 @@ class SALMONN(nn.Module):
         device_8bit=0,  # the device of 8bit model should be set when loading and cannot be changed anymore.
         token=None,
         only_preprocessor=None,
+        use_liger_kernel=False,
     ):
         super().__init__()
 
@@ -108,6 +110,8 @@ class SALMONN(nn.Module):
         self.end_sym = end_sym
         self.low_resource = low_resource
 
+        self.use_liger_kernel = use_liger_kernel
+
         logging.info('Loading LLaMA Tokenizer')
         self.llama_tokenizer = AutoTokenizer.from_pretrained(llama_path, use_fast=False, token=token) 
         self.llama_tokenizer.add_special_tokens({'pad_token': '[PAD]'}) # 패딩 토큰 추가
@@ -115,22 +119,31 @@ class SALMONN(nn.Module):
 
         if not only_preprocessor: # 전처리 모드가 아닌 경우 (아마 Audio Encoder가 Preprocessor인 듯)
             logging.info('Loading LLaMA Model')
-            # 양자화를 사용할 경우
-            if self.low_resource:
-                self.llama_model = AutoModelForCausalLM.from_pretrained(
+            if use_liger_kernel:
+                self.llama_model = AutoLigerKernelForCausalLM.from_pretrained(
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
-                    load_in_8bit=True, # 8bit Quantzation 사용
-                    device_map={"": device_8bit}, # 특정 디바이스에 모델 매핑
                     token=token,
+                    device_map={"": device_8bit}, # 특정 디바이스에 모델 매핑
                 )
+                logging.info
             else:
-                self.llama_model = AutoModelForCausalLM.from_pretrained(
-                    llama_path,
-                    torch_dtype=torch.float16, # FP16 precision
-                    token=token, # Meta 라이선스에 접근 가능한 Token 사용
-                    # attn_implementation="flash_attention_2", # Flash Attention 사용
-                )
+                # 양자화를 사용할 경우
+                if self.low_resource:
+                    self.llama_model = AutoModelForCausalLM.from_pretrained(
+                        llama_path,
+                        torch_dtype=torch.float16, # FP16 precision
+                        load_in_8bit=True, # 8bit Quantzation 사용
+                        device_map={"": device_8bit}, # 특정 디바이스에 모델 매핑
+                        token=token,
+                    )
+                else:
+                    self.llama_model = AutoModelForCausalLM.from_pretrained(
+                        llama_path,
+                        torch_dtype=torch.float16, # FP16 precision
+                        token=token, # Meta 라이선스에 접근 가능한 Token 사용
+                        # attn_implementation="flash_attention_2", # Flash Attention 사용
+                    )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
             self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
@@ -483,6 +496,8 @@ class SALMONN(nn.Module):
 
     @classmethod
     def from_config(cls, config):
+        use_liger_kernel = config.get("liger_kernel", False)
+
         llama_path = config.get("llama_path")
         whisper_path = config.get("whisper_path")
         freeze_whisper = config.get("freeze_whisper", True)
@@ -543,6 +558,7 @@ class SALMONN(nn.Module):
             device_8bit=device_8bit,
             token=token,
             only_preprocessor=only_preprocessor,
+            use_liger_kernel=use_liger_kernel,
         )
 
         # 훈련된 모델 불러오기
