@@ -19,6 +19,7 @@ from metrics import compute_wer, compute_spider
 from inference_timer import InferenceTimer
 
 from dist_utils import get_rank, init_distributed_mode, is_dist_avail_and_initialized, get_world_size, is_main_process
+from dotenv import dotenv_values
 
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -149,10 +150,14 @@ def register_hooks(preprocessor, llm):
     return timer
 
 def main(args):
+    env_path = "/data/env/.env"
+    env = dotenv_values(env_path)
+
 
     cfg = Config(args)
     cfg = replace_test_ann_path(cfg)
     init_distributed_mode(cfg.config.run) # 분산학습 환경 설정
+    cfg.config.model.token = env['HF_Token']
 
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
@@ -209,7 +214,7 @@ def main(args):
         # Generation
         outputs = llama_model.model.generate(
             inputs_embeds=embeds,
-            pad_token_id=llama_model.config.eos_token_id[0],
+            pad_token_id=llama_model.config.eos_token_id,
             max_new_tokens=generate_cfg.get("max_new_tokens", 200),
             num_beams=generate_cfg.get("num_beams", 4),
             do_sample=generate_cfg.get("do_sample", False),

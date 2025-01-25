@@ -136,8 +136,6 @@ class SALMONN(nn.Module):
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
-                    # quantization_config=bnb_config
-                    # attn_implementation="flash_attention_2", # Flash Attention 사용
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
@@ -409,6 +407,26 @@ class SALMONN(nn.Module):
             ).to(spectrogram.device).fill_(-100)
         )
         targets = torch.cat([empty_targets, targets], dim=1)
+        
+        # BOS 토큰 ID가 None이면 오류 발생
+        if self.llama_tokenizer.bos_token_id is None:
+        
+            # Special Tokens 추가
+            special_tokens = {
+                "bos_token": "<|im_start|>",    # '<|im_start|>'를 BOS 토큰으로 설정
+                "eos_token": "<|im_end|>",      # EOS 토큰은 '<|im_end|>'
+                "pad_token": "[PAD]"            # PAD 토큰은 이미 설정됨
+            }
+
+            # 토크나이저에 추가
+            self.llama_tokenizer.add_special_tokens(special_tokens)
+
+            # LLM의 임베딩 크기 재조정
+            self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
+            
+            # bos_token_id 설정 확인
+            #print("[디버깅] BOS 토큰 ID:", self.llama_tokenizer.bos_token_id)
+            #print("[토큰 맵]", self.llama_tokenizer.special_tokens_map)
 
         batch_size = speech_embeds.shape[0]
         bos = torch.ones(

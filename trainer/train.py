@@ -27,6 +27,7 @@ from dist_utils import get_rank, init_distributed_mode
 from models import load_model
 from dataset import SALMONNDataset
 from runner import Runner
+from dotenv import dotenv_values
 
 
 def parse_args():
@@ -58,6 +59,8 @@ def setup_seeds(config):
 def main():
     # set before init_distributed_mode() to ensure the same job_id shared across all ranks.
     job_id = now() # ex) 202403151205 현재 시각
+    env_path = "/data/env/.env"
+    env = dotenv_values(env_path)
 
     # load config
     args = parse_args()
@@ -65,6 +68,7 @@ def main():
     run_config = cfg.config.run
     model_config = cfg.config.model
     data_config = cfg.config.datasets
+    cfg.config.model.token = env['HF_Token']
 
     # initialize distributed training
     init_distributed_mode(run_config) # 분산학습 환경 설정
