@@ -15,7 +15,7 @@ project_name : 'Salmonn'
 model:
   liger_kernel: False
   # paths
-  llama_path: "meta-llama/Llama-3.2-3B-Instruct"
+  llama_path: "Qwen/Qwen2.5-3B-Instruct"
   whisper_path: "openai/whisper-large-v2" #"openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 

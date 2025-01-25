@@ -28,6 +28,7 @@ from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
 from .utils import StoppingCriteriaSub
+from models.ced.audiotransformer import AudioTransformer, CEDConfig
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
@@ -69,6 +70,7 @@ class SALMONN(nn.Module):
         whisper_path="",
         freeze_whisper=True,
         beats_path="",
+        Ced_path="",
         freeze_beats=True,
 
         use_speech_Qformer=True,
@@ -100,6 +102,7 @@ class SALMONN(nn.Module):
         super().__init__()
 
         self.beats_path = beats_path
+        self.Ced_path = Ced_path
         self.use_speech_Qformer = use_speech_Qformer
         self.window_level_Qformer = window_level_Qformer
         self.second_per_window = second_per_window
@@ -192,12 +195,44 @@ class SALMONN(nn.Module):
                     param.requires_grad = False # BEATs Freeze
                 self.beats.eval() # 학습할 필요가 없으니 평가 모드로 설정
                 logging.info("freeze BEATs")
+        elif self.Ced_path:
+            logging.info("Loading Ced Model")
+            Ced_ckpt = torch.load(self.Ced_path)
+            Ced_cfg = CEDConfig()
+            self.Ced = AudioTransformer(
+                Ced_cfg,
+                patch_size=16,
+                embed_dim=768,
+                depth=12,
+                num_heads=12,
+                mlp_ratio=4,
+                outputdim=527,
+                target_length=1012,
+            )
+            self.Ced.load_state_dict(Ced_ckpt, strict=False)
+            self.ln_audio = nn.LayerNorm(self.Ced.embed_dim)
+            self.encoder_peft_config = LoraConfig(
+                target_modules=["q_proj", "v_proj"],
+                inference_mode=False,
+                r=8
+                lora_alpha=32
+                lora_dropout=0.1
+            )
+            self.Ced = get_peft_model(self.Ced, self.encoder_peft_config)
+            self.Ced.print_trainable_parameters()
+            logging.info('LoRA Training')
+
+
 
         if self.use_speech_Qformer:
             if self.beats_path:
                 # 두 Audio Encoder의 출력을 연결해 Query Token 초기화
                 self.speech_Qformer, self.speech_query_tokens = self.init_speech_Qformer(
                     num_query_token=num_speech_query_token, speech_width=self.speech_encoder.config.d_model + self.beats.cfg.encoder_embed_dim
+                )
+            elif self.Ced_path:
+                self.speech_Qformer, self.speech_query_tokens = self.init_speech_Qformer(
+                    num_query_token=num_speech_query_token, speech_width=self.speech_encoder.config.d_model + self.Ced.embed_dim
                 )
             else:
                 # 하나의 Audio Encoder만 사용할 경우
@@ -314,6 +349,8 @@ class SALMONN(nn.Module):
 
             if self.beats_path and raw_wav is not None:
                 audio_embeds, _ = self.beats.extract_features(raw_wav, padding_mask=audio_padding_mask, feature_only=True)
+            elif self.Ced_path and raw_wav is not None:
+                audio_embeds = self.Ced(raw_wav)
             else:
                 audio_embeds = None
                         
