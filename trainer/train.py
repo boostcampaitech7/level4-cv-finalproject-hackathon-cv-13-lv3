@@ -109,11 +109,9 @@ def main():
 
     # train
     runner.train()
-
+    
+    # Log parameters to Google Sheets
+    Gsheet_param(cfg.config)
 
 if __name__ == "__main__":
     main()    
-    args = parse_args()
-    cfg = Config(args)
-    cfg = cfg.config
-    Gsheet_param(cfg)
