@@ -53,11 +53,11 @@ model:
 datasets:
   prefix: "/data/dataset"
   
-  train_ann_path: "/data/dataset/stage1_train_99.json"
-  valid_ann_path: "/data/dataset/stage1_valid_01.json"
+  train_ann_path: "/data/dataset/stage1_train_90.json"
+  valid_ann_path: "/data/dataset/stage1_valid_10.json"
   test_ann_path: "/data/dataset/test_aac.json"
 
-  whisper_path: "openai/whisper-tiny" # "openai/whisper-large-v2"
+  whisper_path: "openai/whisper-large-v2" # "openai/whisper-large-v2"
 
 run:
   # log & settings

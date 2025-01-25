@@ -29,7 +29,7 @@ from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
 from .utils import StoppingCriteriaSub
 
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
+from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
 class SALMONN(nn.Module):
     @classmethod # static method (cls를 통해 클래스에 접근)
@@ -126,6 +126,7 @@ class SALMONN(nn.Module):
                     token=token,
                     device_map={"": device_8bit}, # 특정 디바이스에 모델 매핑
                 )
+                logging.info
             else:
                 # 양자화를 사용할 경우
                 if self.low_resource:
