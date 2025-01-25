@@ -11,6 +11,6 @@ if [ "$1" = "dryrun" ]; then
 fi
 
 # 명령어 실행
-torchrun --nproc_per_node=${num_gpus} --master_port 29501 evaluate_salmonn.py \
+torchrun --nproc_per_node=${num_gpus} evaluate_salmonn.py \
     --cfg-path salmonn_eval_config.yaml \
     ${dryrun} 

@@ -175,11 +175,7 @@ def main(args):
 
     # Evaluation
     testset_ids, hyps, refs = [], [], []
-    count = 0
     for samples in tqdm(dataloader):
-        count += 1
-        if count > 5:
-            break
         testset_id = samples["testset_id"]
         testset_ids.extend(testset_id)
 

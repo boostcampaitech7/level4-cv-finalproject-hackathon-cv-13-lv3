@@ -203,14 +203,19 @@ def main():
             result_df.drop_duplicates(subset=['testset_id'], keep='first', inplace=True)
             result_df.sort_values(by="testset_id", inplace=True)
             
+            def save_result(result_dir, mode):
+                os.makedirs(result_dir, exist_ok=True)
+                final_file = os.path.join(result_dir, f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{mode}.csv")
+                result_df.to_csv(final_file, index=False)
+            
             if args.make_submission:
-                result_df.to_csv("submission.csv", index=False)
+                save_result("submission_results", "submission")
             else:
                 if args.task == 'asr':
                     compute_wer(all_hyps, all_refs)
                 elif args.task == 'aac':
                     compute_spider(all_hyps, all_refs)
-                result_df.to_csv("valid_submission.csv", index=False)
+                save_result("valid_results", "valid")
 
     # 프로세스 그룹 정리
     accelerator.end_training()
