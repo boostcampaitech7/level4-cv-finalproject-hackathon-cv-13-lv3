@@ -50,6 +50,7 @@ model:
   max_txt_len: 300
   end_sym: "<|end_of_text|>"   # TODO: change eos token
 
+  flash_attention: True
 datasets:
   prefix: "/data/dataset"
   

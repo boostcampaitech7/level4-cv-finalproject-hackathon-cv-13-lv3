@@ -28,6 +28,7 @@ from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
 from .utils import StoppingCriteriaSub
+from .attention_torch import replace_attention_with_flash_attention
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
@@ -96,6 +97,7 @@ class SALMONN(nn.Module):
         token=None,
         only_preprocessor=None,
         use_liger_kernel=False,
+        flash_attention=False,
     ):
         super().__init__()
 
@@ -146,6 +148,8 @@ class SALMONN(nn.Module):
                     )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
+            if flash_attention:
+                self.llama_model = replace_attention_with_flash_attention(self.llama_model)
             self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
             for name, param in self.llama_model.named_parameters():
                 param.requires_grad = False # LLM Freeze
@@ -170,6 +174,8 @@ class SALMONN(nn.Module):
         assert whisper_path
         logging.info('Loading Whisper Model')
         self.speech_encoder = WhisperModel.from_pretrained(whisper_path).encoder
+        if flash_attention:
+            self.speech_encoder = replace_attention_with_flash_attention(self.speech_encoder)
         # Whisper Encoder의 출력을 정규화하기 위한 LayerNorm 추가 (Feature Normalization) - 학습 가능한 Layer
         self.ln_speech = nn.LayerNorm(self.speech_encoder.config.d_model)
         if freeze_whisper:
@@ -186,6 +192,8 @@ class SALMONN(nn.Module):
             beats_cfg = BEATsConfig(beats_ckpt['cfg'])
             self.beats = BEATs(beats_cfg)
             self.beats.load_state_dict(beats_ckpt['model'])
+            if flash_attention:
+                self.beats = replace_attention_with_flash_attention(self.beats)
             self.ln_audio = nn.LayerNorm(self.beats.cfg.encoder_embed_dim) # 학습 가능한 LayerNorm 추가
             if freeze_beats:
                 for name, param in self.beats.named_parameters():
@@ -204,6 +212,8 @@ class SALMONN(nn.Module):
                 self.speech_Qformer, self.speech_query_tokens = self.init_speech_Qformer(
                     num_query_token=num_speech_query_token, speech_width=self.speech_encoder.config.d_model
                 )
+            if flash_attention:
+                self.speech_Qformer = replace_attention_with_flash_attention(self.speech_Qformer)
                 
             # Qformer로 BERT 모델을 가져온 뒤 필요 없는 부분 삭제하고 Q-Former 부분만 사용
             # Embedding layer 제거
@@ -515,6 +525,8 @@ class SALMONN(nn.Module):
         speech_llama_proj_model = config.get("speech_llama_proj_model", "")
         freeze_speech_llama_proj = config.get("freeze_speech_llama_proj", False)
 
+        flash_attention = config.get("flash_attention", False)
+
         lora = config.get("lora", True)
         lora_rank = config.get("lora_rank", 8)
         lora_alpha = config.get("lora_alpha", 32)
@@ -560,6 +572,7 @@ class SALMONN(nn.Module):
             token=token,
             only_preprocessor=only_preprocessor,
             use_liger_kernel=use_liger_kernel,
+            flash_attention=flash_attention,
         )
 
         # 훈련된 모델 불러오기
