@@ -27,6 +27,7 @@ from dist_utils import get_rank, init_distributed_mode
 from models import load_model
 from dataset import SALMONNDataset
 from runner import Runner
+from accelerate_runner import AccelerateRunner
 
 
 def parse_args():
@@ -40,7 +41,8 @@ def parse_args():
         "change to --cfg-options instead.",
     )
     parser.add_argument("--dryrun", action='store_true', help='if True, use dummy model and skip forward/backward')
-
+    parser.add_argument("--accelerate", action='store_true', help='if True, use accelerate')
+    
     return parser.parse_args()
 
 
@@ -66,16 +68,21 @@ def main():
     model_config = cfg.config.model
     data_config = cfg.config.datasets
 
-    # initialize distributed training
-    init_distributed_mode(run_config) # 분산학습 환경 설정
-    setup_seeds(run_config) # 랜덤 시드 설정
-    setup_logger() # set after init_distributed_mode() to only log on master. 메인 GPU에서만 출력
+    if args.accelerate:
+        setup_seeds(run_config) # 랜덤 시드 설정
+        setup_logger() # set after init_distributed_mode() to only log on master. 메인 GPU에서만 출력
 
-    # Wandb logger
-    global_rank = int(os.environ["RANK"]) # 현재 GPU ID
-    if global_rank == 0: # 메인 GPU에서만 실행
         wandb.login()
         wandb.init(project="audio_lm", name=run_config.exp_name)
+    else:
+        init_distributed_mode(run_config) # 분산학습 환경 설정
+        setup_seeds(run_config) # 랜덤 시드 설정
+        setup_logger() # set after init_distributed_mode() to only log on master. 메인 GPU에서만 출력
+
+        global_rank = int(os.environ["RANK"]) # 현재 GPU ID
+        if global_rank == 0: # 메인 GPU에서만 실행
+            wandb.login()
+            wandb.init(project="audio_lm", name=run_config.exp_name)
 
     # print config
     cfg.pretty_print()
@@ -95,15 +102,16 @@ def main():
         model = AutoModelForCausalLM.from_pretrained("apple/OpenELM-270M-Instruct", trust_remote_code=True)
 
     # build runner
-    runner = Runner(cfg, model, datasets, job_id, args.dryrun)
+    if args.accelerate:
+        runner = AccelerateRunner(cfg, model, datasets, job_id, args.dryrun)
+    else:
+        runner = Runner(cfg, model, datasets, job_id, args.dryrun)
 
     # train
     runner.train()
-
+    
+    # Log parameters to Google Sheets
+    Gsheet_param(cfg.config)
 
 if __name__ == "__main__":
-    main()
-    args = parse_args()
-    cfg = Config(args)
-    cfg = cfg.config
-    Gsheet_param(cfg)
+    main()    

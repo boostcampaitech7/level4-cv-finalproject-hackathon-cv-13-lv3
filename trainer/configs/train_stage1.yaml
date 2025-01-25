@@ -13,7 +13,7 @@
 # limitations under the License.
 project_name : 'Salmonn'
 model:
-  liger_kernel: True
+  liger_kernel: False
   # paths
   llama_path: "meta-llama/Llama-3.2-3B-Instruct"
   whisper_path: "openai/whisper-large-v2" #"openai/whisper-large-v2"
