@@ -96,6 +96,7 @@ class SALMONN(nn.Module):
         token=None,
         only_preprocessor=None,
         use_liger_kernel=False,
+        torch_compile_mode="max-autotune",
     ):
         super().__init__()
 
@@ -169,7 +170,10 @@ class SALMONN(nn.Module):
         # Whisper 모델 로드
         assert whisper_path
         logging.info('Loading Whisper Model')
-        self.speech_encoder = WhisperModel.from_pretrained(whisper_path).encoder
+        #GPU를 사용하는 모델이면 CPU를 거치지 않고 GPU로 빠르게 읽도록 low_cpu_mem_usage=True 옵션도 추가해 주는 것이 좋습니다
+        self.speech_encoder = WhisperModel.from_pretrained(whisper_path, low_cpu_mem_usage=True, attn_implementation="sdpa", torch_dtype="auto").encoder
+        self.speech_encoder.forward = torch.compile(self.speech_encoder.forward, mode=torch_compile_mode, fullgraph=True)
+        
         # Whisper Encoder의 출력을 정규화하기 위한 LayerNorm 추가 (Feature Normalization) - 학습 가능한 Layer
         self.ln_speech = nn.LayerNorm(self.speech_encoder.config.d_model)
         if freeze_whisper:
@@ -497,6 +501,7 @@ class SALMONN(nn.Module):
 
     @classmethod
     def from_config(cls, config):
+        torch_compile_mode = config.get("torch_compile_mode", "max-autotune")
         use_liger_kernel = config.get("liger_kernel", False)
 
         llama_path = config.get("llama_path")
@@ -560,6 +565,7 @@ class SALMONN(nn.Module):
             token=token,
             only_preprocessor=only_preprocessor,
             use_liger_kernel=use_liger_kernel,
+            torch_compile_mode=torch_compile_mode,
         )
 
         # 훈련된 모델 불러오기
