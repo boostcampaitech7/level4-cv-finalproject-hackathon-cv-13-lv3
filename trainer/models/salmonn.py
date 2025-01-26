@@ -27,7 +27,7 @@ from .Qformer import BertConfig, BertLMHeadModel
 from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
-from .utils import StoppingCriteriaSub
+from .utils import StoppingCriteriaSub, set_lora_config
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
@@ -81,10 +81,7 @@ class SALMONN(nn.Module):
         speech_llama_proj_model="",
         freeze_speech_llama_proj=False,
 
-        lora=True,
-        lora_rank=8,
-        lora_alpha=32,
-        lora_dropout=0.1,
+        lora=None,
 
         multi_prompt=False,
         prompt_path="",
@@ -151,17 +148,9 @@ class SALMONN(nn.Module):
                 param.requires_grad = False # LLM Freeze
             logging.info('Loading LLaMA Done')
 
-            if self.lora:
-                # LoRA 설정
-                self.peft_config = LoraConfig(
-                    task_type=TaskType.CAUSAL_LM, 
-                    inference_mode=False, # 학습 모드로 설정
-                    r=lora_rank, 
-                    lora_alpha=lora_alpha, 
-                    lora_dropout=lora_dropout,
-                    # target_modules=["q_proj", "k_proj", "v_proj", "o_proj"] # 어떤 가중치에 adapter를 적용할지 결정 (For Gemma)
-                )
-                # LLM에 LoRA 적용
+            if self.lora.use_lora:
+                # peft_config를 설정하고 LoRA 적용
+                self.peft_config = set_lora_config(self.lora)  # 함수명이 일치하도록 수정됨
                 self.llama_model = get_peft_model(self.llama_model, self.peft_config)
                 self.llama_model.print_trainable_parameters()
                 logging.info('LoRA Training')
@@ -515,11 +504,8 @@ class SALMONN(nn.Module):
         speech_llama_proj_model = config.get("speech_llama_proj_model", "")
         freeze_speech_llama_proj = config.get("freeze_speech_llama_proj", False)
 
-        lora = config.get("lora", True)
-        lora_rank = config.get("lora_rank", 8)
-        lora_alpha = config.get("lora_alpha", 32)
-        lora_dropout = config.get("lora_dropout", 0.1)
-
+        lora = config.lora
+        
         multi_prompt = config.get("multi_prompt", False)
         prompt_path = config.get("prompt_path", "")
         prompt_template = config.get("prompt_template", "")
@@ -547,9 +533,6 @@ class SALMONN(nn.Module):
             speech_llama_proj_model=speech_llama_proj_model,
             freeze_speech_llama_proj=freeze_speech_llama_proj,
             lora=lora,
-            lora_rank=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
             multi_prompt=multi_prompt,
             prompt_path=prompt_path,
             prompt_template=prompt_template,

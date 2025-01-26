@@ -13,13 +13,13 @@
 # limitations under the License.
 project_name : 'Salmonn'
 model:
-  liger_kernel: False
+  liger_kernel: True
   # paths
   llama_path: "meta-llama/Llama-3.2-3B-Instruct"
-  whisper_path: "openai/whisper-large-v2" #"openai/whisper-large-v2"
+  whisper_path: "openai/whisper-large-v3" #"openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
-  token: "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" # "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" # for Gemma  #"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"  # Use hf token to access gated repositories
+  token: "" # "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" # for Gemma  #"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"  # Use hf token to access gated repositories
 
   ckpt: "" #"model ckpt" # if not "", load model from ckpt for training or evaluation
 
@@ -37,12 +37,22 @@ model:
   speech_llama_proj_model: ""
   freeze_speech_llama_proj: False
 
-  # LoRA
-  lora: True
-  lora_rank: 8
-  lora_alpha: 32
-  lora_dropout: 0.1
+  # LoRA (utils.py에서 참고)
+  lora:
+    use_lora: True
+    lora_type: "lora", # [lora, adalora, llama-adapter]
+    rank: 8
+    alpha: 32
+    dropout: 0.1
+    target_modules: None # ["q_proj", "k_proj", "v_proj", "o_proj"]
+    # 추가 옵션
+    # init_r: 12
+    # beta1: 0.85
+    # beta2: 0.85
+    # adapter_len: 32
+    # adapter_layers: 30
 
+  # Multi-Prompt
   multi_prompt: True
   prompt_template: "USER: {}\nASSISTANT:"
   prompt_path: "prompts/train_prompt.json"
@@ -57,7 +67,7 @@ datasets:
   valid_ann_path: "/data/dataset/stage1_valid_10.json"
   test_ann_path: "/data/dataset/test_aac.json"
 
-  whisper_path: "openai/whisper-large-v2" # "openai/whisper-large-v2"
+  whisper_path: "openai/whisper-large-v3" # "openai/whisper-large-v2"
 
 run:
   # log & settings
