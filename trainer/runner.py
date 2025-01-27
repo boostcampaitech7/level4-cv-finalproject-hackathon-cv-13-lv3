@@ -307,6 +307,10 @@ class Runner:
         best_agg_metric = 0
         best_epoch = 0
 
+        # 체크포인트 저장 모드와 간격 가져오기
+        checkpoint_mode = self.config.config.run.get("checkpoint_mode", "last_only")
+        checkpoint_interval = self.config.config.run.get("checkpoint_interval", 5)
+
         for cur_epoch in range(self.start_epoch, self.max_epoch):
             if self.evaluate_only:
                 break
@@ -317,22 +321,42 @@ class Runner:
             self.log_stats(train_stats, split_name="train")
 
             # validating phase
-            logging.info("Validating Phase")
-            valid_log = self.valid_epoch(cur_epoch, "valid", decode=False, save_json=False)
-            if valid_log is not None:
-                if is_main_process():
+            if checkpoint_mode == "interval_and_best":
+                # 지정된 간격에 따라 평가
+                if (cur_epoch + 1) % checkpoint_interval == 0 or cur_epoch == self.max_epoch - 1:
+                    logging.info("Validating Phase")
+                    valid_log = self.valid_epoch(cur_epoch, "valid", decode=False, save_json=False)
+                    if valid_log is not None and is_main_process():
+                        agg_metrics = valid_log["agg_metrics"]
+                        if agg_metrics > best_agg_metric:
+                            best_agg_metric = agg_metrics
+                            best_epoch = cur_epoch
+                            self.save_checkpoint(cur_epoch, is_best=True)
+
+                        valid_log.update({"best_epoch": best_epoch})
+                        self.log_stats(valid_log, split_name="valid")
+                        wandb.log({"valid/epoch": cur_epoch, "valid/agg_metrics": agg_metrics})
+
+                    # 마지막 평가 체크포인트 저장
+                    self.save_checkpoint(cur_epoch, is_best=False)
+
+            elif checkpoint_mode == "last_only" and cur_epoch == self.max_epoch - 1:
+                # 마지막 에폭에서만 평가
+                logging.info("Validating Phase")
+                valid_log = self.valid_epoch(cur_epoch, "valid", decode=False, save_json=False)
+                if valid_log is not None and is_main_process():
                     agg_metrics = valid_log["agg_metrics"]
                     if agg_metrics > best_agg_metric:
                         best_agg_metric = agg_metrics
                         best_epoch = cur_epoch
-
-                        self.save_checkpoint(cur_epoch, is_best=True)                    
+                        self.save_checkpoint(cur_epoch, is_best=True)
 
                     valid_log.update({"best_epoch": best_epoch})
                     self.log_stats(valid_log, split_name="valid")
                     wandb.log({"valid/epoch": cur_epoch, "valid/agg_metrics": agg_metrics})
 
-            self.save_checkpoint(cur_epoch, is_best=False)
+                # 마지막 체크포인트 저장
+                self.save_checkpoint(cur_epoch, is_best=False)
 
             if self.use_distributed:
                 dist.barrier()
@@ -344,6 +368,9 @@ class Runner:
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         logging.info("Training time {}".format(total_time_str))
+
+
+
 
     @main_process # 메인 프로세스에서만 실행
     def log_config(self):

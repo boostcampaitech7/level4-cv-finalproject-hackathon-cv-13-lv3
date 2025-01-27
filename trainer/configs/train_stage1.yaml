@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 project_name : 'Salmonn'
+
+checkpoint_mode: "last_only"  # "last_only" 또는 "interval_and_best"
+checkpoint_interval: 5       # "interval_and_best" 모드에서 eval 간격 설정
+
 model:
   torch_compile_mode: "max-autotune"
   liger_kernel: False
@@ -80,6 +84,7 @@ run:
   amp: True
   world_size: 2
   dist_url: "env://"
+
 
   # optimizer & scheduler
   optims:
