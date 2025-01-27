@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 import pandas as pd
 from tqdm import tqdm
-from accelerate import Accelerator
+from accelerate import Accelerator, ProfileKwargs
 
 # Add custom module path
 sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
@@ -69,6 +69,58 @@ def replace_test_ann_path(cfg, task):
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_aac
     return cfg
 
+def process_batch(samples, encode_speech, prompt_wrap, tokenizer, llama_model, args, test_prompt, cfg, accelerator):
+    """Process a single batch of samples"""
+    # Preprocess
+    samples = prepare_sample(samples, cuda_enabled=accelerator.device.type == "cuda")
+    batch_size = samples["spectrogram"].shape[0]
+    spectrogram = samples["spectrogram"]
+    raw_wav = samples.get("raw_wav", None)
+    audio_padding_mask = samples.get("padding_mask", None)
+  
+    # Encode speech
+    speech_embeds, speech_atts = encode_speech(
+        spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
+    )
+  
+    # Add prompt embeds + audio embed 
+    prompts = [test_prompt[args.task] for task in samples['task']]
+    templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
+
+    speech_embeds, speech_atts = prompt_wrap(
+        speech_embeds, speech_atts, templated_prompts, multi_prompt=True
+    )
+
+    bos = torch.ones(
+        [batch_size, 1],
+        dtype=torch.int32,
+        device=speech_embeds.device,
+    ) * tokenizer.bos_token_id
+
+    bos_embeds = llama_model.module.base_model.model.model.embed_tokens(bos)
+    atts_bos = speech_atts[:, :1]
+  
+    embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
+    attns = torch.cat([atts_bos, speech_atts], dim=1)
+
+    generate_cfg = cfg.config.generate
+
+    with accelerator.autocast():
+        outputs = llama_model.module.generate(
+            inputs_embeds=embeds,
+            pad_token_id=llama_model.module.config.eos_token_id[0],
+            max_new_tokens=generate_cfg.get("max_new_tokens", 200),
+            num_beams=generate_cfg.get("num_beams", 4),
+            do_sample=generate_cfg.get("do_sample", True),
+            min_length=generate_cfg.get("min_length", 1),
+            temperature=generate_cfg.get("temperature", 0.7),
+            top_p=generate_cfg.get("top_p", 0.9),
+            repetition_penalty=generate_cfg.get("repetition_penalty", 1.0),
+            length_penalty=generate_cfg.get("length_penalty", 1.0),
+            attention_mask=attns,
+        )
+
+    return outputs, batch_size
 
 def main():
     args = parse_args()
@@ -77,8 +129,16 @@ def main():
     
     setup_seeds(cfg.config.run)
     
-    # Accelerator 초기화
-    accelerator = Accelerator(mixed_precision='fp16' if cfg.config.run.get("amp", False) else 'no')
+    # Add profiling configuration
+    profile_kwargs = ProfileKwargs(
+        activities=["cpu", "cuda"],
+        profile_memory=True,
+        record_shapes=True
+    )
+    accelerator = Accelerator(
+        mixed_precision='fp16' if cfg.config.run.get("amp", False) else 'no',
+        kwargs_handlers=[profile_kwargs]
+    )
     
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
@@ -113,109 +173,104 @@ def main():
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)
 
-    # Evaluation loop with torch.no_grad()
-    with torch.no_grad():
-        local_testset_ids = []
-        local_hyps = []
-        local_refs = []
-        
-        for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
-            # Preprocess
-            samples = prepare_sample(samples, cuda_enabled=accelerator.device.type == "cuda")
-            batch_size = samples["spectrogram"].shape[0]
-            spectrogram = samples["spectrogram"]
-            raw_wav = samples.get("raw_wav", None)
-            audio_padding_mask = samples.get("padding_mask", None)
-          
-            # Encode speech
-            speech_embeds, speech_atts = encode_speech(
-                spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
-            )
-          
-            # Add prompt embeds + audio embed 
-            prompts = [test_prompt[task] for task in samples['task']]
-            templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
+    start_time = time.time()
+    total_samples = 0
 
-            speech_embeds, speech_atts = prompt_wrap(
-                speech_embeds, speech_atts, templated_prompts, multi_prompt=True
-            )
-
-            bos = torch.ones(
-                [batch_size, 1],
-                dtype=torch.int32,
-                device=speech_embeds.device,
-            ) * tokenizer.bos_token_id
-
-            bos_embeds = llama_model.module.base_model.model.model.embed_tokens(bos)
-            atts_bos = speech_atts[:, :1]
-          
-            embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
-            attns = torch.cat([atts_bos, speech_atts], dim=1)
-
-            generate_cfg = cfg.config.generate
-        
-            with accelerator.autocast():
-                outputs = llama_model.module.generate(
-                    inputs_embeds=embeds,
-                    pad_token_id=llama_model.module.config.eos_token_id[0],
-                    max_new_tokens=generate_cfg.get("max_new_tokens", 200),
-                    num_beams=generate_cfg.get("num_beams", 4),
-                    do_sample=generate_cfg.get("do_sample", True),
-                    min_length=generate_cfg.get("min_length", 1),
-                    temperature=generate_cfg.get("temperature", 0.7),
-                    top_p=generate_cfg.get("top_p", 0.9),
-                    repetition_penalty=generate_cfg.get("repetition_penalty", 1.0),
-                    length_penalty=generate_cfg.get("length_penalty", 1.0),
-                    attention_mask=attns,
-                )
-
-            # 로컬에 결과 저장 (gather 없이)
-            decoded_results = tokenizer.batch_decode(outputs)
-            local_hyps.extend([result.split(generate_cfg.end_sym)[0].lower() for result in decoded_results])
-            local_testset_ids.extend(samples["testset_id"])
+    # Add profiling context
+    with accelerator.profile() as prof:
+        with torch.no_grad():
+            local_testset_ids = []
+            local_hyps = []
+            local_refs = []
             
+            for batch_idx, samples in enumerate(tqdm(dataloader)):
+                if batch_idx < 10:  # 처음 10개 배치만 프로파일링
+                    outputs, batch_size = process_batch(
+                        samples, encode_speech, prompt_wrap, tokenizer, 
+                        llama_model, args, test_prompt, cfg, accelerator
+                    )
+                else:
+                    with prof.skip():  # 나머지는 프로파일링 스킵
+                        outputs, batch_size = process_batch(
+                            samples, encode_speech, prompt_wrap, tokenizer, 
+                            llama_model, args, test_prompt, cfg, accelerator
+                        )
+
+                # 결과 처리
+                decoded_results = tokenizer.batch_decode(outputs)
+                local_hyps.extend([result.split(cfg.config.generate.end_sym)[0].lower() for result in decoded_results])
+                local_testset_ids.extend(samples["testset_id"])
+                
+                if not args.make_submission:
+                    local_refs.extend(samples["text"])
+                total_samples += batch_size
+            
+            # 모든 프로세스의 처리가 끝난 후 한번에 gather
+            accelerator.wait_for_everyone()
+            
+            # 디버깅을 위한 출력
+            if accelerator.is_local_main_process:
+                print(f"Local process collected: {len(local_testset_ids)} samples")
+            
+            # 전체 결과를 한번에 gather
+            all_testset_ids = accelerator.gather_for_metrics(local_testset_ids)
+            all_hyps = accelerator.gather_for_metrics(local_hyps)
             if not args.make_submission:
-                local_refs.extend(samples["text"])
-    
-        # 모든 프로세스의 처리가 끝난 후 한번에 gather
-        accelerator.wait_for_everyone()
-        
-        # 디버깅을 위한 출력
-        if accelerator.is_local_main_process:
-            print(f"Local process collected: {len(local_testset_ids)} samples")
-        
-        # 전체 결과를 한번에 gather
-        all_testset_ids = accelerator.gather_for_metrics(local_testset_ids)
-        all_hyps = accelerator.gather_for_metrics(local_hyps)
-        if not args.make_submission:
-            all_refs = accelerator.gather_for_metrics(local_refs)
-        
-        # 디버깅을 위한 출력
-        if accelerator.is_local_main_process:
-            print(f"After gathering: {len(all_testset_ids)} samples")
-            print(f"Hyps length: {len(all_hyps)}")
+                all_refs = accelerator.gather_for_metrics(local_refs)
             
-            # 결과 저장
-            result_df = pd.DataFrame({
-                "testset_id": all_testset_ids,
-                "text": all_hyps
-            })
-            result_df.drop_duplicates(subset=['testset_id'], keep='first', inplace=True)
-            result_df.sort_values(by="testset_id", inplace=True)
-            
-            def save_result(result_dir, mode):
-                os.makedirs(result_dir, exist_ok=True)
-                final_file = os.path.join(result_dir, f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{mode}.csv")
-                result_df.to_csv(final_file, index=False)
-            
-            if args.make_submission:
-                save_result("submission_results", "submission")
-            else:
-                if args.task == 'asr':
-                    compute_wer(all_hyps, all_refs)
-                elif args.task == 'aac':
-                    compute_spider(all_hyps, all_refs)
-                save_result("valid_results", "valid")
+            # 디버깅을 위한 출력
+            if accelerator.is_local_main_process:
+                print(f"After gathering: {len(all_testset_ids)} samples")
+                print(f"Hyps length: {len(all_hyps)}")
+                
+                # 결과 저장
+                result_df = pd.DataFrame({
+                    "testset_id": all_testset_ids,
+                    "text": all_hyps
+                })
+                result_df.drop_duplicates(subset=['testset_id'], keep='first', inplace=True)
+                result_df.sort_values(by="testset_id", inplace=True)
+                
+                def save_result(result_dir, mode):
+                    os.makedirs(result_dir, exist_ok=True)
+                    final_file = os.path.join(result_dir, f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{mode}.csv")
+                    result_df.to_csv(final_file, index=False)
+                
+                if args.make_submission:
+                    save_result("submission_results", "submission")
+                else:
+                    if args.task == 'asr':
+                        compute_wer(all_hyps, all_refs)
+                    elif args.task == 'aac':
+                        compute_spider(all_hyps, all_refs)
+                    save_result("valid_results", "valid")
+
+    end_time = time.time()
+
+    # Print profiling results if this is the main process
+    if accelerator.is_local_main_process:
+        print("\n=== Performance Analysis ===")
+        print(f"Total processing time: {end_time - start_time:.2f} seconds")
+        print(f"Samples processed: {total_samples}")
+        print(f"Average time per sample: {(end_time - start_time) / total_samples:.4f} seconds")
+        
+        print("\n=== Top 10 Time Consuming Operations ===")
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+        
+        print("\n=== Memory Usage Statistics ===")
+        print(prof.key_averages().table(sort_by="self_cuda_memory_usage", row_limit=10))
+        
+        # Save profiling results
+        os.makedirs("profile_results", exist_ok=True)
+        prof.export_chrome_trace(f"profile_results/trace_{args.mode}_{time.strftime('%Y%m%d_%H%M%S')}.json")
+        
+        with open(f"profile_results/profile_stats_{args.mode}_{time.strftime('%Y%m%d_%H%M%S')}.txt", "w") as f:
+            f.write("=== Performance Analysis ===\n")
+            f.write(f"Total processing time: {end_time - start_time:.2f} seconds\n")
+            f.write(f"Samples processed: {total_samples}\n")
+            f.write(f"Average time per sample: {(end_time - start_time) / total_samples:.4f} seconds\n\n")
+            f.write("=== Detailed Profile Statistics ===\n")
+            f.write(prof.key_averages().table())
 
     # 프로세스 그룹 정리
     accelerator.end_training()
