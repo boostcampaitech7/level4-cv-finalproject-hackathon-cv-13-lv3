@@ -70,10 +70,6 @@ def main():
 
     if args.accelerate:
         setup_seeds(run_config) # 랜덤 시드 설정
-        setup_logger() # set after init_distributed_mode() to only log on master. 메인 GPU에서만 출력
-
-        wandb.login()
-        wandb.init(project="audio_lm", name=run_config.exp_name)
     else:
         init_distributed_mode(run_config) # 분산학습 환경 설정
         setup_seeds(run_config) # 랜덤 시드 설정

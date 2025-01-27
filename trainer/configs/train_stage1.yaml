@@ -68,6 +68,7 @@ run:
   exp_name: "llama-3.2-1B-1percent-stage1"
 
   log_freq: 5
+  log_level_warning: True # log level이 Info면 모델의 layer도 전부 출력
   epoch_based: False
   iters_per_epoch: 3000
   accum_grad_iters: 1

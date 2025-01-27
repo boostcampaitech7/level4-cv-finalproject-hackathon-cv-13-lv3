@@ -47,7 +47,14 @@ def setup_logger():
         handlers=[logging.StreamHandler()],
     )
 
-
+def setup_acceletate_logger(accelerate, log_level_warning):
+    log_level = logging.INFO if accelerate.is_local_main_process and not log_level_warning else logging.WARN
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.StreamHandler()],
+    )
+    
 def get_dataloader(dataset, config, is_train=True, use_distributed=True):
     # 분산 학습을 사용하면
     if use_distributed:
