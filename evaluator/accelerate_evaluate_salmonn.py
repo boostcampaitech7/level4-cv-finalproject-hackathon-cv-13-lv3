@@ -136,10 +136,9 @@ def main():
             prompts = [test_prompt[task] for task in samples['task']]
             templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
 
-            with accelerator.autocast():
-                speech_embeds, speech_atts = prompt_wrap(
-                    speech_embeds, speech_atts, templated_prompts, multi_prompt=True
-                )
+            speech_embeds, speech_atts = prompt_wrap(
+                speech_embeds, speech_atts, templated_prompts, multi_prompt=True
+            )
 
             bos = torch.ones(
                 [batch_size, 1],
