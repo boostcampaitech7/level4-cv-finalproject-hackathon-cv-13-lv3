@@ -19,7 +19,7 @@ sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
 # Custom modules
 from salmonn_utils import SALMONNTestDataset, load_preprocessor, load_model
 from config import Config
-from utils import get_accelerator_dataloader, prepare_sample
+from utils import get_accelerator_dataloader
 from train import setup_seeds
 from metrics import compute_wer, compute_spider
 
@@ -121,24 +121,25 @@ def main():
         
         for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
             # Preprocess
-            samples = prepare_sample(samples, cuda_enabled=accelerator.device.type == "cuda")
             batch_size = samples["spectrogram"].shape[0]
             spectrogram = samples["spectrogram"]
             raw_wav = samples.get("raw_wav", None)
             audio_padding_mask = samples.get("padding_mask", None)
           
             # Encode speech
-            speech_embeds, speech_atts = encode_speech(
-                spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
-            )
+            with accelerator.autocast():    
+                speech_embeds, speech_atts = encode_speech(
+                    spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
+                )
           
             # Add prompt embeds + audio embed 
             prompts = [test_prompt[task] for task in samples['task']]
             templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
 
-            speech_embeds, speech_atts = prompt_wrap(
-                speech_embeds, speech_atts, templated_prompts, multi_prompt=True
-            )
+            with accelerator.autocast():
+                speech_embeds, speech_atts = prompt_wrap(
+                    speech_embeds, speech_atts, templated_prompts, multi_prompt=True
+                )
 
             bos = torch.ones(
                 [batch_size, 1],
