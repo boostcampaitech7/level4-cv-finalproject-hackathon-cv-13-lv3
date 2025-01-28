@@ -18,7 +18,6 @@ from logger import MetricLogger, SmoothedValue
 from utils import get_dataloader, prepare_sample
 from optims import get_optimizer, LinearWarmupCosineLRScheduler
 
-
 class Runner:
     def __init__(self, cfg, model, datasets, job_id, dryrun):
         self.config = cfg
@@ -346,10 +345,10 @@ class Runner:
                 valid_log = self.valid_epoch(cur_epoch, "valid", decode=False, save_json=False)
                 if valid_log is not None and is_main_process():
                     agg_metrics = valid_log["agg_metrics"]
-                    if agg_metrics > best_agg_metric:
-                        best_agg_metric = agg_metrics
-                        best_epoch = cur_epoch
-                        self.save_checkpoint(cur_epoch, is_best=True)
+                    # if agg_metrics > best_agg_metric:
+                    #     best_agg_metric = agg_metrics
+                    #     best_epoch = cur_epoch
+                    #     self.save_checkpoint(cur_epoch, is_best=True)
 
                     valid_log.update({"best_epoch": best_epoch})
                     self.log_stats(valid_log, split_name="valid")
