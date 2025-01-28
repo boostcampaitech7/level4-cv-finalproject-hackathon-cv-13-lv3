@@ -15,11 +15,8 @@ if [ "$1" = "dryrun" ]; then
 fi
 # 저장된 config 파일로 실행
 accelerate launch \
-    # --gradient_accumulation_steps=2 \
-    # --split_batches \
     --config_file ./configs/accelerate_config.yaml \
     train.py \
-    --accumulate_grad_steps 2 \
     --cfg-path ${train_config} \
     ${dryrun} \
     --accelerate

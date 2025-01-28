@@ -15,6 +15,3 @@ tpu_env: []
 tpu_use_cluster: false
 tpu_use_sudo: false
 use_cpu: false
-memory_efficient_fp16: true        # 메모리 효율적인 fp16 사용
-gradient_accumulation_steps: 2     # 그래디언트 누적
-split_batches: true               # 배치 분할

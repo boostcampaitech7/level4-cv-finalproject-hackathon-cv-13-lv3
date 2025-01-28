@@ -78,7 +78,7 @@ def main():
     setup_seeds(cfg.config.run)
     
     # Accelerator 초기화
-    accelerator = Accelerator(mixed_precision='fp16' if cfg.config.run.get("amp", False) else 'no')
+    accelerator = Accelerator()
     
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)

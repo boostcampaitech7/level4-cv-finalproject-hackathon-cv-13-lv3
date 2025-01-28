@@ -312,6 +312,7 @@ def get_accelerator_dataloader(dataset, config, is_train=True):
         pin_memory=True,
         collate_fn=dataset.collater,
         drop_last=is_train,
+        shuffle=is_train,
     )
 
     if is_train:

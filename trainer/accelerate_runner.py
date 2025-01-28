@@ -14,7 +14,7 @@ from accelerate import Accelerator
 import wandb
 
 from logger import MetricLogger, SmoothedValue
-from utils import get_accelerator_dataloader, setup_accelerate_logger
+from utils import get_accelerator_dataloader, setup_accelerate_logger, get_dataloader
 from optims import get_optimizer, LinearWarmupCosineLRScheduler
 
 class AccelerateRunner:
@@ -112,13 +112,11 @@ class AccelerateRunner:
             samples = next(self.train_loader)
 
             if not self.dryrun:
-                # Accelerate handles the mixed precision automatically
-                with self.accelerator.autocast():
-                    loss = self.model(samples)["loss"]
-                
-                self.accelerator.backward(loss)
-
-                if (i + 1) % self.config.config.run.accum_grad_iters == 0:
+                with self.accelerator.accumulate():
+                    with self.accelerator.autocast():
+                        loss = self.model(samples)["loss"]
+                    
+                    self.accelerator.backward(loss)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
                     self.scheduler.step(cur_epoch=epoch, cur_step=i)
@@ -132,10 +130,6 @@ class AccelerateRunner:
                         "train/loss": loss.item(), 
                         "train/lr": self.optimizer.param_groups[0]["lr"]
                     })
-
-                # 배치 처리 후 메모리 정리 추가
-                # if self.cuda_enabled and (i + 1) % self.config.config.run.accum_grad_iters == 0:
-                #     torch.cuda.empty_cache()
             else:
                 metric_logger.update(loss=0.0)
                 metric_logger.update(lr=0.0)
@@ -162,14 +156,34 @@ class AccelerateRunner:
         header = "Eval: data epoch: [{}]".format(epoch)
 
         results = []
-        for samples in metric_logger.log_every(dataloader, self.config.config.run.log_freq, header=header):
+        # GPU별 loss, correct, total 누적용 변수 초기화
+        total_loss = 0
+        total_correct = 0
+        total_samples = 0
+        total_tokens = 0
 
+        for i, samples in enumerate(metric_logger.log_every(dataloader, self.config.config.run.log_freq, header=header)):
             if not self.dryrun:
-                forward_result = model(samples, verbose=True)
+                with self.accelerator.autocast():
+                    forward_result = model(samples, verbose=True)
+                    
                 loss = forward_result.get("loss", 0)
-                correct = forward_result.get("correct", 0) 
+                correct = forward_result.get("correct", 0)
                 total = forward_result.get("total", 1)
                 
+                # 현재 배치의 결과를 누적
+                total_loss += loss.item() * len(samples["id"])
+                total_correct += correct
+                total_samples += len(samples["id"])
+                total_tokens += total
+
+                if self.accelerator.is_local_main_process:
+                    wandb.log({
+                        f"{split}/iteration": i,
+                        f"{split}/loss": loss.item(),
+                        f"{split}/acc": (correct / total).item()
+                    })
+
                 res = {
                     "id": samples["id"],
                     "ground_truth": samples["text"],
@@ -177,62 +191,48 @@ class AccelerateRunner:
                     "acc": (correct / total).item(),
                     "total": total,
                 }
-            else:
-                res = {
-                    "id": samples["id"],
-                    "ground_truth": samples["text"],
-                    "loss": 0.0,
-                    "acc": 0.0,
-                    "total": 1,
-                }
 
-            if decode:
-                if model.prompt_dict:
-                    if self.test_prompt_dict is None:
-                        prompts = None
+                if decode:
+                    if model.prompt_dict:
+                        if self.test_prompt_dict is None:
+                            prompts = None
+                        else:
+                            prompts = [self.test_prompt_dict[s] for s in samples["task"]]
+                            if "Q" in samples:
+                                prompts = [p.format(q) if "{}" in p else p for p, q in zip(prompts, samples["Q"])]
                     else:
-                        prompts = [self.test_prompt_dict[s] for s in samples["task"]]
-                        if "Q" in samples:
-                            prompts = [p.format(q) if "{}" in p else p for p, q in zip(prompts, samples["Q"])]
-                else:
-                    prompts = None
-                    
-                with self.accelerator.autocast():
-                    text = model.generate(samples, self.config.config.run, prompts=prompts)
-                res["text"] = text
-                res["prompt"] = prompts
-                res["task"] = samples["task"]
+                        prompts = None
 
-            results.append(res)
+                    with self.accelerator.autocast():
+                        text = model.generate(samples, self.config.config.run, prompts=prompts)
+                    
+                    res.update({
+                        "text": text,
+                        "prompt": prompts,
+                        "task": samples["task"]
+                    })
+
+                results.append(res)
+
+        # 모든 GPU에서의 결과를 수집
+        if self.accelerator.use_distributed:
+            all_loss = self.accelerator.gather(torch.tensor(total_loss)).sum()
+            all_correct = self.accelerator.gather(torch.tensor(total_correct)).sum()
+            all_samples = self.accelerator.gather(torch.tensor(total_samples)).sum()
+            all_tokens = self.accelerator.gather(torch.tensor(total_tokens)).sum()
+        else:
+            all_loss = torch.tensor(total_loss).to(self.device)
+            all_correct = torch.tensor(total_correct).to(self.device)
+            all_samples = torch.tensor(total_samples).to(self.device)
+            all_tokens = torch.tensor(total_tokens).to(self.device)
 
         if save_json and self.accelerator.is_local_main_process:
             self.save_result(results, self.output_dir, f"eval_{split}_epoch_{epoch}")
 
-        res = {
-            "loss": torch.tensor(0).float().to(self.device),
-            "n_sample": torch.tensor(0).float().to(self.device),
-            "correct": torch.tensor(0).float().to(self.device),
-            "n_token": torch.tensor(0).float().to(self.device),
+        ret = {
+            "loss": (all_loss / all_samples).item(),
+            "agg_metrics": (all_correct / all_tokens).item()
         }
-        
-        for item in results:
-            item_loss = item["loss"]
-            item_n_sample = len(item["id"])
-            item_correct = item["acc"] * item["total"]
-            item_n_token = item["total"]
-            res["loss"] += item_loss * item_n_sample
-            res["n_sample"] += item_n_sample
-            res["correct"] += item_correct
-            res["n_token"] += item_n_token
-
-        # Gather all results across all processes (원래 runner에서 사용하는 방식이 더 빠를 수 있음)
-        if self.accelerator.use_distributed:
-            for k in res:
-                res[k] = self.accelerator.gather_for_metrics(res[k]).sum()
-
-        ret = {"loss": 0, "agg_metrics": 0}
-        ret["loss"] = (res["loss"] / res["n_sample"]).item()
-        ret["agg_metrics"] = (res["correct"] / res["n_token"]).item()
 
         return ret
 
