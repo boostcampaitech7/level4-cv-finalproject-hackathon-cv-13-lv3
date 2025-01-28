@@ -14,7 +14,7 @@ from accelerate import Accelerator
 import wandb
 
 from logger import MetricLogger, SmoothedValue
-from utils import get_accelerator_dataloader
+from utils import get_accelerator_dataloader, setup_acceletate_logger
 from optims import get_optimizer, LinearWarmupCosineLRScheduler
 from dist_utils import main_process, is_main_process
 
@@ -79,6 +79,12 @@ class AccelerateRunner:
             self._model, self.optimizer, self.train_loader, self.valid_loader, self.test_loader, self.scheduler
         )
         
+        setup_acceletate_logger(self.accelerator, self.config.config.run.log_level_warning)
+        
+        if self.accelerator.is_local_main_process:
+            wandb.login()
+            wandb.init(project="audio_lm", name=cfg.config.run.exp_name)
+    
         self.device = self.accelerator.device
         self.cuda_enabled = self.accelerator.device.type == "cuda"
         
@@ -93,7 +99,7 @@ class AccelerateRunner:
         metric_logger = MetricLogger(delimiter="  ")
         metric_logger.add_meter("lr", SmoothedValue(window_size=1, fmt="{value:.6f}"))
         metric_logger.add_meter("loss", SmoothedValue(window_size=1, fmt="{value:.4f}"))
-
+        metric_logger.set_accelerator(self.accelerator)
         logging.info(
             "Start training epoch {}, {} iters per inner epoch.".format(
                 epoch, self.iters_per_epoch
@@ -121,7 +127,7 @@ class AccelerateRunner:
                 metric_logger.update(loss=loss.item())
                 metric_logger.update(lr=self.optimizer.param_groups[0]["lr"])
                 
-                if self.accelerator.is_main_process:
+                if self.accelerator.is_local_main_process:
                     wandb.log({
                         "train/iteration": i, 
                         "train/loss": loss.item(), 
@@ -134,7 +140,7 @@ class AccelerateRunner:
             else:
                 metric_logger.update(loss=0.0)
                 metric_logger.update(lr=0.0)
-                if self.accelerator.is_main_process:
+                if self.accelerator.is_local_main_process:
                     wandb.log({"train/iteration": i, "train/loss": 0.0, "train/lr": 0.0})
 
         metric_logger.synchronize_between_processes()
@@ -199,7 +205,7 @@ class AccelerateRunner:
 
             results.append(res)
 
-        if save_json:
+        if save_json and self.accelerator.is_local_main_process:
             self.save_result(results, self.output_dir, f"eval_{split}_epoch_{epoch}")
 
         res = {
@@ -241,7 +247,7 @@ class AccelerateRunner:
         self.accelerator.wait_for_everyone()
         
         # 메인 프로세스에서 결과 병합
-        if self.accelerator.is_main_process:
+        if self.accelerator.is_local_main_process:
             merged_result = []
             for rank in range(self.accelerator.num_processes):
                 rank_file = os.path.join(result_dir, f"{filename}_rank{rank}.json")
