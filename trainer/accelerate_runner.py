@@ -14,10 +14,8 @@ from accelerate import Accelerator
 import wandb
 
 from logger import MetricLogger, SmoothedValue
-from utils import get_accelerator_dataloader, setup_acceletate_logger
+from utils import get_accelerator_dataloader, setup_accelerate_logger
 from optims import get_optimizer, LinearWarmupCosineLRScheduler
-from dist_utils import main_process, is_main_process
-
 
 class AccelerateRunner:
     def __init__(self, cfg, model, datasets, job_id, dryrun):
@@ -79,7 +77,7 @@ class AccelerateRunner:
             self._model, self.optimizer, self.train_loader, self.valid_loader, self.test_loader, self.scheduler
         )
         
-        setup_acceletate_logger(self.accelerator, self.config.config.run.log_level_warning)
+        setup_accelerate_logger(self.accelerator, self.config.config.run.log_level_warning)
         
         if self.accelerator.is_local_main_process:
             wandb.login()
@@ -115,7 +113,8 @@ class AccelerateRunner:
 
             if not self.dryrun:
                 # Accelerate handles the mixed precision automatically
-                loss = self.model(samples)["loss"]
+                with self.accelerator.autocast():
+                    loss = self.model(samples)["loss"]
                 
                 self.accelerator.backward(loss)
 
@@ -135,8 +134,8 @@ class AccelerateRunner:
                     })
 
                 # 배치 처리 후 메모리 정리 추가
-                if self.cuda_enabled and (i + 1) % self.config.config.run.accum_grad_iters == 0:
-                    torch.cuda.empty_cache()
+                # if self.cuda_enabled and (i + 1) % self.config.config.run.accum_grad_iters == 0:
+                #     torch.cuda.empty_cache()
             else:
                 metric_logger.update(loss=0.0)
                 metric_logger.update(lr=0.0)
@@ -197,8 +196,9 @@ class AccelerateRunner:
                             prompts = [p.format(q) if "{}" in p else p for p, q in zip(prompts, samples["Q"])]
                 else:
                     prompts = None
-
-                text = model.generate(samples, self.config.config.run, prompts=prompts)
+                    
+                with self.accelerator.autocast():
+                    text = model.generate(samples, self.config.config.run, prompts=prompts)
                 res["text"] = text
                 res["prompt"] = prompts
                 res["task"] = samples["task"]
@@ -228,7 +228,7 @@ class AccelerateRunner:
         # Gather all results across all processes (원래 runner에서 사용하는 방식이 더 빠를 수 있음)
         if self.accelerator.use_distributed:
             for k in res:
-                res[k] = self.accelerator.gather(res[k]).sum()
+                res[k] = self.accelerator.gather_for_metrics(res[k]).sum()
 
         ret = {"loss": 0, "agg_metrics": 0}
         ret["loss"] = (res["loss"] / res["n_sample"]).item()
@@ -305,22 +305,23 @@ class AccelerateRunner:
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         logging.info("Training time {}".format(total_time_str))
 
-    @main_process
     def log_config(self):
-        with open(os.path.join(self.output_dir, "log.txt"), "a") as f:
-            f.write(json.dumps(self.config.to_dict(), indent=4) + "\n")
-
-    @main_process
-    def log_stats(self, stats, split_name):
-        if isinstance(stats, dict):
-            log_stats = {**{f"{split_name}_{k}": v for k, v in stats.items()}}
+        if self.accelerator.is_local_main_process:
             with open(os.path.join(self.output_dir, "log.txt"), "a") as f:
-                f.write(json.dumps(log_stats) + "\n")
-        elif isinstance(stats, list):
-            pass
+                f.write(json.dumps(self.config.to_dict(), indent=4) + "\n")
 
-    @main_process
+    def log_stats(self, stats, split_name):
+        if self.accelerator.is_local_main_process:
+            if isinstance(stats, dict):
+                log_stats = {**{f"{split_name}_{k}": v for k, v in stats.items()}}
+                with open(os.path.join(self.output_dir, "log.txt"), "a") as f:
+                    f.write(json.dumps(log_stats) + "\n")
+            elif isinstance(stats, list):
+                pass
+
     def save_checkpoint(self, cur_epoch, is_best=False):
+        if not self.accelerator.is_local_main_process:
+            return
         """
         Save the checkpoint at the current epoch.
         """
