@@ -4,7 +4,6 @@ import math
 import logging
 
 import torch
-import bitsandbytes as bnb
 
 
 class LinearWarmupStepLRScheduler:
@@ -138,7 +137,7 @@ def get_optimizer(model, config):
         {"params": p_non_wd, "weight_decay": 0},
     ]
     beta2 = config.get("beta2", 0.999)
-    optimizer = bnb.optim.AdamW8bit(
+    optimizer = torch.optim.AdamW(
         optim_params,
         lr=float(config.init_lr),
         weight_decay=float(config.weight_decay),
