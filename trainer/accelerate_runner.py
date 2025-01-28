@@ -14,7 +14,7 @@ from accelerate import Accelerator
 import wandb
 
 from logger import MetricLogger, SmoothedValue
-from utils import get_accelerator_dataloader, prepare_sample
+from utils import get_accelerator_dataloader
 from optims import get_optimizer, LinearWarmupCosineLRScheduler
 from dist_utils import main_process, is_main_process
 
@@ -101,21 +101,11 @@ class AccelerateRunner:
         )
         header = "Train: data epoch: [{}]".format(epoch)
 
-        # DataLoader를 iterator로 변환
-        train_iter = iter(self.train_loader)
-
         for i in metric_logger.log_every(range(self.iters_per_epoch), self.config.config.run.log_freq, header=header, logger=self.log_writter, start_step=epoch*self.iters_per_epoch):
             if i >= self.iters_per_epoch:
                 break
             
-            try:
-                samples = next(train_iter)
-            except StopIteration:
-                # 데이터를 모두 소진했을 경우 iterator 재생성
-                train_iter = iter(self.train_loader)
-                samples = next(train_iter)
-
-            samples = prepare_sample(samples, cuda_enabled=self.cuda_enabled)
+            samples = next(self.train_loader)
 
             if not self.dryrun:
                 # Accelerate handles the mixed precision automatically
@@ -168,7 +158,6 @@ class AccelerateRunner:
 
         results = []
         for samples in metric_logger.log_every(dataloader, self.config.config.run.log_freq, header=header):
-            samples = prepare_sample(samples, cuda_enabled=self.cuda_enabled)
 
             if not self.dryrun:
                 forward_result = model(samples, verbose=True)

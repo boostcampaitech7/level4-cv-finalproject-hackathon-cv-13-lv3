@@ -303,9 +303,11 @@ def get_accelerator_dataloader(dataset, config, is_train=True):
         batch_size=config.batch_size_train if is_train else config.batch_size_eval,
         num_workers=config.num_workers,
         pin_memory=True,
-        shuffle=is_train,  # 학습 시에만 shuffle
         collate_fn=dataset.collater,
         drop_last=is_train,
     )
+
+    if is_train:
+        loader = IterLoader(loader)
 
     return loader
