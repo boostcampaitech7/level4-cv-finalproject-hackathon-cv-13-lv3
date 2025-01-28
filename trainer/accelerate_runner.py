@@ -338,6 +338,7 @@ class AccelerateRunner:
             "model": state_dict,
             "optimizer": self.optimizer.state_dict(),
             "config": self.config.to_dict(),
+            "scaler": self.accelerator.scaler.state_dict() if self.accelerator.scaler else None,
             "epoch": cur_epoch,
         }
         save_to = os.path.join(
