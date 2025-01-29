@@ -119,11 +119,7 @@ def main():
         local_hyps = []
         local_refs = []
         
-        idx = 0
         for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
-            idx += 1
-            if idx > 3:
-                break
             # Preprocess
             batch_size = samples["spectrogram"].shape[0]
             spectrogram = samples["spectrogram"]
