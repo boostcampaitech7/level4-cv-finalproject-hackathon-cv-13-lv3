@@ -27,7 +27,7 @@ from .Qformer import BertConfig, BertLMHeadModel
 from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
-from .utils import StoppingCriteriaSub, get_quantization_config
+from .utils import StoppingCriteriaSub, setup_quantized_model
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
@@ -92,6 +92,7 @@ class SALMONN(nn.Module):
         max_txt_len=128,
         end_sym="</s>",
         low_resource=False,  # use 8 bit
+        quant_method="qlora",
         device_8bit=0,  # the device of 8bit model should be set when loading and cannot be changed anymore.
         token=None,
         only_preprocessor=None,
@@ -127,18 +128,17 @@ class SALMONN(nn.Module):
             if self.low_resource:
                 print("Low Resource Mode")
                 # BitsAndBytesConfig 설정   
-                quant_config = BitsAndBytesConfig(
-                    load_in_8bit = True
-                )
-                self.llama_model = CausalLMWrapper.from_pretrained(
-                    llama_path,
-                    token=token,
-                    # torch_dtype=torch.float16, # FP16 precision
-                    # load_in_8bit=True, # 8bit Quantzation 사용
-                    device_map="auto",
-                    quantization_config=quant_config,
-                )
+                # quant_config = setup_quantized_model(llama_path, token, quant_method=quant_method)
+                # self.llama_model = CausalLMWrapper.from_pretrained(
+                #     llama_path,
+                #     token=token,
+                #     # torch_dtype=torch.float16, # FP16 precision
+                #     # load_in_8bit=True, # 8bit Quantzation 사용
+                #     device_map="auto",
+                #     quantization_config=quant_config,
+                # )
                 # self.llama_model = prepare_model_for_kbit_training(self.llama_model)
+                self.llama_model = setup_quantized_model(llama_path, token, quant_method=quant_method)
             else:
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
@@ -548,6 +548,7 @@ class SALMONN(nn.Module):
         max_txt_len = config.get("max_txt_len", 128)
         end_sym = config.get("end_sym", "</s>")
         low_resource = config.get("low_resource", False)
+        quant_method = config.get("quant_method", "qlora")
         device_8bit = config.get("device_8bit", 0)
 
         token = config.get("token", None)
@@ -578,6 +579,7 @@ class SALMONN(nn.Module):
             max_txt_len=max_txt_len,
             end_sym=end_sym,
             low_resource=low_resource,
+            quant_method=quant_method,
             device_8bit=device_8bit,
             token=token,
             only_preprocessor=only_preprocessor,

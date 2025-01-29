@@ -52,6 +52,7 @@ model:
   end_sym: "<|end_of_text|>"   # TODO: change eos token
 
   low_resource: True
+  quant_method: "qlora"
 datasets:
   prefix: "/data/dataset"
   
