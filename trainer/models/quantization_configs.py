@@ -1,3 +1,4 @@
+import torch
 from transformers import StoppingCriteria,  BitsAndBytesConfig, GPTQConfig, AutoModelForCausalLM, AwqConfig
 from peft import prepare_model_for_kbit_training
 
