@@ -19,7 +19,7 @@ sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
 # Custom modules
 from salmonn_utils import SALMONNTestDataset, load_preprocessor, load_model
 from config import Config
-from utils import get_accelerator_dataloader, prepare_sample
+from utils import get_accelerator_dataloader
 from train import setup_seeds
 from metrics import compute_wer, compute_spider
 
@@ -78,7 +78,7 @@ def main():
     setup_seeds(cfg.config.run)
     
     # Accelerator 초기화
-    accelerator = Accelerator(mixed_precision='fp16' if cfg.config.run.get("amp", False) else 'no')
+    accelerator = Accelerator()
     
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
@@ -121,16 +121,16 @@ def main():
         
         for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
             # Preprocess
-            samples = prepare_sample(samples, cuda_enabled=accelerator.device.type == "cuda")
             batch_size = samples["spectrogram"].shape[0]
             spectrogram = samples["spectrogram"]
             raw_wav = samples.get("raw_wav", None)
             audio_padding_mask = samples.get("padding_mask", None)
           
             # Encode speech
-            speech_embeds, speech_atts = encode_speech(
-                spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
-            )
+            with accelerator.autocast():    
+                speech_embeds, speech_atts = encode_speech(
+                    spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
+                )
           
             # Add prompt embeds + audio embed 
             prompts = [test_prompt[task] for task in samples['task']]
