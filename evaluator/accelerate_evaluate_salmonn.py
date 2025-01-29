@@ -9,10 +9,9 @@ from pathlib import Path
 
 # Third-party imports
 import torch
-from torch.profiler import profile, record_function
 import pandas as pd
 from tqdm import tqdm
-from accelerate import Accelerator, ProfileKwargs
+from accelerate import Accelerator
 
 # Add custom module path
 sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
@@ -20,7 +19,7 @@ sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
 # Custom modules
 from salmonn_utils import SALMONNTestDataset, load_preprocessor, load_model
 from config import Config
-from utils import get_accelerator_dataloader, prepare_sample
+from utils import get_accelerator_dataloader
 from train import setup_seeds
 from metrics import compute_wer, compute_spider
 
@@ -70,71 +69,6 @@ def replace_test_ann_path(cfg, task):
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_aac
     return cfg
 
-# 모듈별 자동 프로파일링을 위한 훅 등록
-def register_profiling_hooks(model):
-    """Register profiling hooks for all submodules with their full path names"""
-    def create_hook(name):
-        def hook(module, input, output):
-            with torch.profiler.record_function(f"Layer[{name}]"):
-                pass
-        return hook
-
-    # 모든 서브모듈에 대해 전체 경로를 포함한 이름으로 프로파일링
-    for name, module in model.named_modules():
-        module.register_forward_hook(create_hook(name))
-
-def process_batch(samples, encode_speech, prompt_wrap, tokenizer, llama_model, args, test_prompt, cfg, accelerator):
-    """Process a single batch of samples"""
-    # Preprocess
-    samples = prepare_sample(samples, cuda_enabled=accelerator.device.type == "cuda")
-    batch_size = samples["spectrogram"].shape[0]
-    spectrogram = samples["spectrogram"]
-    raw_wav = samples.get("raw_wav", None)
-    audio_padding_mask = samples.get("padding_mask", None)
-  
-    # Encode speech
-    speech_embeds, speech_atts = encode_speech(
-        spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
-    )
-  
-    # Add prompt embeds + audio embed 
-    prompts = [test_prompt[args.task] for task in samples['task']]
-    templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
-
-    speech_embeds, speech_atts = prompt_wrap(
-        speech_embeds, speech_atts, templated_prompts, multi_prompt=True
-    )
-
-    bos = torch.ones(
-        [batch_size, 1],
-        dtype=torch.int32,
-        device=speech_embeds.device,
-    ) * tokenizer.bos_token_id
-
-    bos_embeds = llama_model.module.base_model.model.model.embed_tokens(bos)
-    atts_bos = speech_atts[:, :1]
-  
-    embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
-    attns = torch.cat([atts_bos, speech_atts], dim=1)
-
-    generate_cfg = cfg.config.generate
-
-    with accelerator.autocast():
-        outputs = llama_model.module.generate(
-            inputs_embeds=embeds,
-            pad_token_id=llama_model.module.config.eos_token_id[0],
-            max_new_tokens=generate_cfg.get("max_new_tokens", 200),
-            num_beams=generate_cfg.get("num_beams", 4),
-            do_sample=generate_cfg.get("do_sample", True),
-            min_length=generate_cfg.get("min_length", 1),
-            temperature=generate_cfg.get("temperature", 0.7),
-            top_p=generate_cfg.get("top_p", 0.9),
-            repetition_penalty=generate_cfg.get("repetition_penalty", 1.0),
-            length_penalty=generate_cfg.get("length_penalty", 1.0),
-            attention_mask=attns,
-        )
-
-    return outputs, batch_size
 
 def main():
     args = parse_args()
@@ -143,27 +77,14 @@ def main():
     
     setup_seeds(cfg.config.run)
     
-    # Add profiling configuration
-    profile_kwargs = ProfileKwargs(
-        activities=["cpu", "cuda"],  # CPU 프로파일링 제외
-        profile_memory=True,  
-        record_shapes=False,   # shape 기록 비활성화
-        with_stack=False      # 스택 트레이스 비활성화
-    )
-    accelerator = Accelerator(
-        mixed_precision='fp16' if cfg.config.run.get("amp", False) else 'no',
-        kwargs_handlers=[profile_kwargs]
-    )
+    # Accelerator 초기화
+    accelerator = Accelerator()
     
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, tokenizer = load_model(salmonn_preprocessor)
-    
-    # 모든 서브 모듈에 프로파일링 훅 등록
-    register_profiling_hooks(salmonn_preprocessor)
-    register_profiling_hooks(llama_model)
-    
     salmonn_preprocessor.llama_model = llama_model
+    
     
     # Set models to eval mode
     salmonn_preprocessor.eval()
@@ -176,61 +97,90 @@ def main():
         salmonn_preprocessor.encode_speech, salmonn_preprocessor.prompt_wrap, tokenizer, salmonn_preprocessor.llama_model, dataloader
     )
 
+    # # Debugging output
+    # print(f"Type of llama_model: {type(llama_model)}")
+    # print(f"Has 'module' attribute: {hasattr(llama_model, 'module')}")
+    # if hasattr(llama_model, 'module'):
+    #     print(f"Type of llama_model.module: {type(llama_model.module)}")
+    #     print(f"Type of llama_model.module.config: {type(llama_model.module.config)}")
+    #     print(f"Type of llama_model.module.config.eos_token_id: {type(llama_model.module.config.eos_token_id)}")
+    #     print(f"Type of llama_model.module.config.eos_token_id[0]: {type(llama_model.module.config.eos_token_id[0])}")
+    #     print(f"Type of llama_model.module.module.embed_tokens: {type(llama_model.module.base_model.model.model.embed_tokens)}")
+    # print(f"Has 'model' attribute: {hasattr(llama_model, 'model')}")
+    # if hasattr(llama_model, 'model'):
+    #     print(f"Type of llama_model.model: {type(llama_model.model)}")
+
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)
 
-    start_time = time.time()
-    total_samples = 0
-
-    # 프로파일링 컨텍스트 수정
+    # Evaluation loop with torch.no_grad()
     with torch.no_grad():
         local_testset_ids = []
         local_hyps = []
         local_refs = []
         
-        # 첫 번째 배치만 프로파일링
-        # 프로파일러 설정
-        with profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            record_shapes=True,
-            with_stack=True
-        ) as prof:
-            for batch_idx, samples in enumerate(tqdm(dataloader)):
-                if batch_idx > 0:  # 첫 번째 배치 이후에는 프로파일링 컨텍스트를 벗어남
-                    break
-                    
-                outputs, batch_size = process_batch(
-                    samples, encode_speech, prompt_wrap, tokenizer, 
-                    llama_model, args, test_prompt, cfg, accelerator
-                )
-                
-                # 결과 처리
-                decoded_results = tokenizer.batch_decode(outputs)
-                local_hyps.extend([result.split(cfg.config.generate.end_sym)[0].lower() for result in decoded_results])
-                local_testset_ids.extend(samples["testset_id"])
-                
-                if not args.make_submission:
-                    local_refs.extend(samples["text"])
-                total_samples += batch_size
-
-        # 나머지 배치 처리 (프로파일링 없이)
-        for batch_idx, samples in enumerate(tqdm(dataloader), start=1):
-            if batch_idx > 2:
+        idx = 0
+        for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
+            idx += 1
+            if idx > 3:
                 break
-            outputs, batch_size = process_batch(
-                samples, encode_speech, prompt_wrap, tokenizer, 
-                llama_model, args, test_prompt, cfg, accelerator
+            # Preprocess
+            batch_size = samples["spectrogram"].shape[0]
+            spectrogram = samples["spectrogram"]
+            raw_wav = samples.get("raw_wav", None)
+            audio_padding_mask = samples.get("padding_mask", None)
+          
+            # Encode speech
+            with accelerator.autocast():    
+                speech_embeds, speech_atts = encode_speech(
+                    spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
+                )
+          
+            # Add prompt embeds + audio embed 
+            prompts = [test_prompt[task] for task in samples['task']]
+            templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
+
+            speech_embeds, speech_atts = prompt_wrap(
+                speech_embeds, speech_atts, templated_prompts, multi_prompt=True
             )
-            
-            # 결과 처리
+
+            bos = torch.ones(
+                [batch_size, 1],
+                dtype=torch.int32,
+                device=speech_embeds.device,
+            ) * tokenizer.bos_token_id
+
+            bos_embeds = llama_model.module.base_model.model.model.embed_tokens(bos)
+            atts_bos = speech_atts[:, :1]
+          
+            embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
+            attns = torch.cat([atts_bos, speech_atts], dim=1)
+
+            generate_cfg = cfg.config.generate
+        
+            with accelerator.autocast():
+                outputs = llama_model.module.generate(
+                    inputs_embeds=embeds,
+                    pad_token_id=llama_model.module.config.eos_token_id[0],
+                    max_new_tokens=generate_cfg.get("max_new_tokens", 200),
+                    num_beams=generate_cfg.get("num_beams", 4),
+                    do_sample=generate_cfg.get("do_sample", True),
+                    min_length=generate_cfg.get("min_length", 1),
+                    temperature=generate_cfg.get("temperature", 0.7),
+                    top_p=generate_cfg.get("top_p", 0.9),
+                    repetition_penalty=generate_cfg.get("repetition_penalty", 1.0),
+                    length_penalty=generate_cfg.get("length_penalty", 1.0),
+                    attention_mask=attns,
+                )
+
+            # 로컬에 결과 저장 (gather 없이)
             decoded_results = tokenizer.batch_decode(outputs)
-            local_hyps.extend([result.split(cfg.config.generate.end_sym)[0].lower() for result in decoded_results])
+            local_hyps.extend([result.split(generate_cfg.end_sym)[0].lower() for result in decoded_results])
             local_testset_ids.extend(samples["testset_id"])
             
             if not args.make_submission:
                 local_refs.extend(samples["text"])
-            total_samples += batch_size
-
+    
         # 모든 프로세스의 처리가 끝난 후 한번에 gather
         accelerator.wait_for_everyone()
         
@@ -270,33 +220,6 @@ def main():
                 elif args.task == 'aac':
                     compute_spider(all_hyps, all_refs)
                 save_result("valid_results", "valid")
-
-    end_time = time.time()
-
-    # Print profiling results if this is the main process
-    if accelerator.is_local_main_process:
-        print("\n=== Layer-wise Performance Analysis ===")
-        print(prof.key_averages().table(
-            sort_by="cuda_time_total",
-            row_limit=50,
-            filter_fn=lambda evt: "Layer[" in evt.key
-        ))
-        
-        with open(f"profile_results/profile_stats_{args.mode}_{time.strftime('%Y%m%d_%H%M%S')}.txt", "w") as f:
-            f.write("=== Detailed Layer-wise Statistics ===\n")
-            f.write("\nTop 50 layers by CUDA time:\n")
-            f.write(prof.key_averages().table(
-                sort_by="cuda_time_total",
-                row_limit=50,
-                filter_fn=lambda evt: "Layer[" in evt.key
-            ))
-            
-            f.write("\nTop 50 layers by Memory Usage:\n")
-            f.write(prof.key_averages().table(
-                sort_by="cuda_memory_usage",
-                row_limit=50,
-                filter_fn=lambda evt: "Layer[" in evt.key
-            ))
 
     # 프로세스 그룹 정리
     accelerator.end_training()

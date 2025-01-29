@@ -7,6 +7,7 @@ from collections import defaultdict, deque
 
 import torch
 import torch.distributed as dist
+from tqdm import tqdm
 
 from dist_utils import is_dist_avail_and_initialized, is_main_process
 
@@ -78,6 +79,7 @@ class MetricLogger(object):
     def __init__(self, delimiter="\t"):
         self.meters = defaultdict(SmoothedValue)
         self.delimiter = delimiter
+        self.accelerator = None
 
     def update(self, **kwargs):
         for k, v in kwargs.items():
@@ -122,64 +124,57 @@ class MetricLogger(object):
         end = time.time()
         iter_time = SmoothedValue(fmt="{avg:.4f}")
         data_time = SmoothedValue(fmt="{avg:.4f}")
-        space_fmt = ":" + str(len(str(len(iterable)))) + "d"
-        log_msg = [
-            header,
-            "[{0" + space_fmt + "}/{1}]",
-            "eta: {eta}",
-            "{meters}",
-            "time: {time}",
-            "data: {data}",
-        ]
-        if torch.cuda.is_available():
-            log_msg.append("max mem: {memory:.0f}")
-        log_msg = self.delimiter.join(log_msg)
         MB = 1024.0 * 1024.0
+
+        # tqdm 설정 추가
+        if (is_main_process() or (self.accelerator and self.accelerator.is_local_main_process)):
+            pbar = tqdm(total=len(iterable), desc=header, leave=True)
+
         for obj in iterable:
             data_time.update(time.time() - end)
             yield obj
             iter_time.update(time.time() - end)
-            if i % print_freq == 0 or i == len(iterable) - 1:
-                if is_main_process():
-                    if logger is not None:
-                        assert start_step is not None, "start_step is needed to compute global_step!"
-                        for name, meter in self.meters.items():
-                            logger.add_scalar("{}".format(name), float(str(meter)), global_step=start_step+i)
+            if (i % print_freq == 0 or i == len(iterable) - 1) and (is_main_process() or (self.accelerator and self.accelerator.is_local_main_process)):
+                if logger is not None:
+                    assert start_step is not None, "start_step is needed to compute global_step!"
+                    for name, meter in self.meters.items():
+                        logger.add_scalar("{}".format(name), float(str(meter)), global_step=start_step+i)
+                
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+                
+                # tqdm postfix 업데이트
+                postfix_dict = {
+                    'eta': eta_string,
+                    'time': f'{iter_time.avg:.4f}',
+                    'data': f'{data_time.avg:.4f}',
+                }
+                # meters(lr, loss 등) 추가
+                for name, meter in self.meters.items():
+                    postfix_dict[name] = f'{meter.global_avg:.6f}'
+                
                 if torch.cuda.is_available():
-                    print(
-                        log_msg.format(
-                            i,
-                            len(iterable),
-                            eta=eta_string,
-                            meters=str(self),
-                            time=str(iter_time),
-                            data=str(data_time),
-                            memory=torch.cuda.max_memory_allocated() / MB,
-                        )
-                    )
-                else:
-                    print(
-                        log_msg.format(
-                            i,
-                            len(iterable),
-                            eta=eta_string,
-                            meters=str(self),
-                            time=str(iter_time),
-                            data=str(data_time),
-                        )
-                    )
+                    postfix_dict['max_mem'] = f'{torch.cuda.max_memory_allocated() / MB:.0f}MB'
+                
+                pbar.set_postfix(postfix_dict)
+                pbar.update(print_freq if i + print_freq < len(iterable) else len(iterable) - i)
+
             i += 1
             end = time.time()
+
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-        print(
-            "{} Total time: {} ({:.4f} s / it)".format(
-                header, total_time_str, total_time / len(iterable)
+        
+        if (is_main_process() or (self.accelerator and self.accelerator.is_local_main_process)):
+            pbar.close()
+            print(
+                "{} Total time: {} ({:.4f} s / it)".format(
+                    header, total_time_str, total_time / len(iterable)
+                )
             )
-        )
 
+    def set_accelerator(self, accelerator):
+        self.accelerator = accelerator
 
 class AttrDict(dict):
     def __init__(self, *args, **kwargs):

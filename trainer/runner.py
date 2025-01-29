@@ -77,7 +77,7 @@ class Runner:
         # scaler
         self.use_amp = self.config.config.run.get("amp", False)
         if self.use_amp:
-            self.scaler = torch.cuda.amp.GradScaler()
+            self.scaler = torch.amp.GradScaler('cuda')
         else:
             self.scaler = None
 

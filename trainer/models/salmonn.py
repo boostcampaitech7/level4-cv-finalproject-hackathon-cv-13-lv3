@@ -96,6 +96,7 @@ class SALMONN(nn.Module):
         token=None,
         only_preprocessor=None,
         use_liger_kernel=False,
+        torch_compile_mode="max-autotune",
     ):
         super().__init__()
 
@@ -119,31 +120,23 @@ class SALMONN(nn.Module):
 
         if not only_preprocessor: # 전처리 모드가 아닌 경우 (아마 Audio Encoder가 Preprocessor인 듯)
             logging.info('Loading LLaMA Model')
+            CausalLMWrapper = AutoModelForCausalLM
             if use_liger_kernel:
-                self.llama_model = AutoLigerKernelForCausalLM.from_pretrained(
+                CausalLMWrapper = AutoLigerKernelForCausalLM
+            # 양자화를 사용할 경우
+            if self.low_resource:
+                self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
+                    load_in_8bit=True, # 8bit Quantzation 사용
                     token=token,
-                    device_map={"": device_8bit}, # 특정 디바이스에 모델 매핑
                 )
-                logging.info
             else:
-                # 양자화를 사용할 경우
-                if self.low_resource:
-                    self.llama_model = AutoModelForCausalLM.from_pretrained(
-                        llama_path,
-                        torch_dtype=torch.float16, # FP16 precision
-                        load_in_8bit=True, # 8bit Quantzation 사용
-                        device_map={"": device_8bit}, # 특정 디바이스에 모델 매핑
-                        token=token,
-                    )
-                else:
-                    self.llama_model = AutoModelForCausalLM.from_pretrained(
-                        llama_path,
-                        torch_dtype=torch.float16, # FP16 precision
-                        token=token, # Meta 라이선스에 접근 가능한 Token 사용
-                        # attn_implementation="flash_attention_2", # Flash Attention 사용
-                    )
+                self.llama_model = CausalLMWrapper.from_pretrained(
+                    llama_path,
+                    torch_dtype=torch.float16, # FP16 precision
+                    token=token, # Meta 라이선스에 접근 가능한 Token 사용
+                )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
             self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
@@ -169,7 +162,23 @@ class SALMONN(nn.Module):
         # Whisper 모델 로드
         assert whisper_path
         logging.info('Loading Whisper Model')
-        self.speech_encoder = WhisperModel.from_pretrained(whisper_path).encoder
+        speech_model = WhisperModel.from_pretrained(
+            whisper_path,
+            low_cpu_mem_usage=True,  # CPU 메모리 사용 최소화
+            attn_implementation="sdpa",  # SDPA 어텐션 활성화
+            torch_dtype="auto",         # 자동 혼합 정밀도
+        )
+
+        speech_model = torch.compile(
+            speech_model,
+            mode=torch_compile_mode,
+            fullgraph=True,
+            dynamic=False     # 고정 입력 크기 가정
+        )
+        
+        self.speech_encoder = speech_model.encoder
+        logging.info("torch_compiled Whisper Model Loaded")
+        
         # Whisper Encoder의 출력을 정규화하기 위한 LayerNorm 추가 (Feature Normalization) - 학습 가능한 Layer
         self.ln_speech = nn.LayerNorm(self.speech_encoder.config.d_model)
         if freeze_whisper:
@@ -186,6 +195,10 @@ class SALMONN(nn.Module):
             beats_cfg = BEATsConfig(beats_ckpt['cfg'])
             self.beats = BEATs(beats_cfg)
             self.beats.load_state_dict(beats_ckpt['model'])
+
+            self.beats = torch.compile(self.beats, mode=torch_compile_mode,dynamic=False, fullgraph=True)
+            logging.info("torch_compiled BEATs loaded")
+
             self.ln_audio = nn.LayerNorm(self.beats.cfg.encoder_embed_dim) # 학습 가능한 LayerNorm 추가
             if freeze_beats:
                 for name, param in self.beats.named_parameters():
@@ -497,6 +510,7 @@ class SALMONN(nn.Module):
 
     @classmethod
     def from_config(cls, config):
+        torch_compile_mode = config.get("torch_compile_mode", "max-autotune")
         use_liger_kernel = config.get("liger_kernel", False)
 
         llama_path = config.get("llama_path")
@@ -560,6 +574,7 @@ class SALMONN(nn.Module):
             token=token,
             only_preprocessor=only_preprocessor,
             use_liger_kernel=use_liger_kernel,
+            torch_compile_mode=torch_compile_mode,
         )
 
         # 훈련된 모델 불러오기
