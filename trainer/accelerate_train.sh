@@ -15,7 +15,7 @@ if [ "$1" = "dryrun" ]; then
 fi
 # 저장된 config 파일로 실행
 accelerate launch \
-    --config_file ./configs/accelerate_deepspeed_config.yaml \
+    --config_file ./configs/accelerate_config.yaml \
     train.py \
     --cfg-path ${train_config} \
     ${dryrun} \

@@ -20,14 +20,14 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
-from peft import LoraConfig, TaskType, get_peft_model
+from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig, GPTQConfig
+from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
 from .Qformer import BertConfig, BertLMHeadModel
 from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
-from .utils import StoppingCriteriaSub
+from .utils import StoppingCriteriaSub, get_quantization_config
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
@@ -125,12 +125,20 @@ class SALMONN(nn.Module):
                 CausalLMWrapper = AutoLigerKernelForCausalLM
             # 양자화를 사용할 경우
             if self.low_resource:
+                print("Low Resource Mode")
+                # BitsAndBytesConfig 설정   
+                quant_config = BitsAndBytesConfig(
+                    load_in_8bit = True
+                )
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
-                    torch_dtype=torch.float16, # FP16 precision
-                    load_in_8bit=True, # 8bit Quantzation 사용
                     token=token,
+                    # torch_dtype=torch.float16, # FP16 precision
+                    # load_in_8bit=True, # 8bit Quantzation 사용
+                    device_map="auto",
+                    quantization_config=quant_config,
                 )
+                # self.llama_model = prepare_model_for_kbit_training(self.llama_model)
             else:
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
