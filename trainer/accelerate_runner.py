@@ -9,6 +9,7 @@ import logging
 
 import torch
 import torch.distributed as dist
+import numpy as np
 from tensorboardX import SummaryWriter
 from accelerate import Accelerator
 import wandb
@@ -112,6 +113,10 @@ class AccelerateRunner:
                 break
             
             samples = next(self.train_loader)
+            # numpy array를 tensor로 변환하고 모든 텐서를 한번에 디바이스로 이동
+            samples = {k: torch.tensor(v, device=self.device) if isinstance(v, np.ndarray) 
+                      else v.to(self.device) if isinstance(v, torch.Tensor) 
+                      else v for k, v in samples.items()}
 
             if not self.dryrun:
                 with self.accelerator.accumulate():
@@ -158,14 +163,18 @@ class AccelerateRunner:
         header = "Eval: data epoch: [{}]".format(epoch)
 
         results = []
-        # GPU별 loss, correct, total 누적용 변수 초기화
-        total_loss = 0.0  # 일반 float로 누적
+        total_loss = 0.0
         total_correct = 0.0
         total_samples = 0
         total_tokens = 0
 
         for i, samples in enumerate(metric_logger.log_every(dataloader, self.config.config.run.log_freq, header=header)):
             if not self.dryrun:
+                # 여기에 디바이스 이동 코드 추가
+                samples = {k: torch.tensor(v, device=self.device) if isinstance(v, np.ndarray) 
+                          else v.to(self.device) if isinstance(v, torch.Tensor) 
+                          else v for k, v in samples.items()}
+
                 with self.accelerator.autocast():
                     forward_result = model(samples, verbose=True)
                     
