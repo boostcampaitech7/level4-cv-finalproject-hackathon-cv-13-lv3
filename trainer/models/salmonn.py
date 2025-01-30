@@ -209,6 +209,7 @@ class SALMONN(nn.Module):
                 self.beats.eval() # 학습할 필요가 없으니 평가 모드로 설정
                 logging.info("freeze BEATs")
         elif self.Ced_path:
+            print("Loading Ced Model")
             logging.info("Loading Ced Model")
             Ced_ckpt = torch.load(self.Ced_path)
             Ced_cfg = CEDConfig()
@@ -223,16 +224,18 @@ class SALMONN(nn.Module):
                 target_length=1012,
             )
             self.Ced.load_state_dict(Ced_ckpt, strict=False)
+            
             self.ln_audio = nn.LayerNorm(self.Ced.embed_dim)
             self.encoder_peft_config = LoraConfig(
                 target_modules=["q_proj", "v_proj"],
                 inference_mode=False,
-                r=8
-                lora_alpha=32
-                lora_dropout=0.1
+                r=8,
+                lora_alpha=32,
+                lora_dropout=0.1,
             )
             self.Ced = get_peft_model(self.Ced, self.encoder_peft_config)
             self.Ced.print_trainable_parameters()
+            self.Ced = torch.compile(self.Ced, mode=torch_compile_mode,dynamic=False, fullgraph=True)
             logging.info('LoRA Training')
 
 
@@ -363,7 +366,7 @@ class SALMONN(nn.Module):
             if self.beats_path and raw_wav is not None:
                 audio_embeds, _ = self.beats.extract_features(raw_wav, padding_mask=audio_padding_mask, feature_only=True)
             elif self.Ced_path and raw_wav is not None:
-                audio_embeds = self.Ced(raw_wav)
+                audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32))
             else:
                 audio_embeds = None
                         
@@ -554,6 +557,7 @@ class SALMONN(nn.Module):
         whisper_path = config.get("whisper_path")
         freeze_whisper = config.get("freeze_whisper", True)
         beats_path = config.get("beats_path", "")
+        Ced_path = config.get("Ced_path","")
         freeze_beats = config.get("freeze_beats", True)
 
         use_speech_Qformer = config.get("use_speech_Qformer", True)
@@ -588,6 +592,7 @@ class SALMONN(nn.Module):
             whisper_path=whisper_path,
             freeze_whisper=freeze_whisper,
             beats_path=beats_path,
+            Ced_path=Ced_path,
             freeze_beats=freeze_beats,
             use_speech_Qformer=use_speech_Qformer,
             num_speech_query_token=num_speech_query_token,

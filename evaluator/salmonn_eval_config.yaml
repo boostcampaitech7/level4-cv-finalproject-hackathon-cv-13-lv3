@@ -17,12 +17,13 @@ model:
   # paths
   llama_path: "meta-llama/Llama-3.2-3B-Instruct" # "unsloth/gemma-2b-bnb-4bit" #"lmsys/vicuna-13b-v1.1"
   whisper_path: "openai/whisper-large-v3" #"openai/whisper-large-v2"
-  beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
+  beats_path: "" # "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
+  Ced_path: "/data/dataset/pretrained/audiotransformer_base_mAP_4999.pt"
 
   token: "" # Use hf token to access gated repositories
   only_preprocessor: False
 
-  ckpt: /data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-whisper-large-v3/checkpoint_best.pth
+  ckpt: "/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/202501301145/checkpoint_best.pth"
   #"/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-Gemma-2-2b-it-whisper-small-5epoch/checkpoint_best.pth"
 
   freeze_whisper: True
@@ -55,7 +56,7 @@ model:
 generate:
   max_new_tokens: 200
   num_beams: 4
-  do_sample: True
+  do_sample: False
   min_length: 1
   temperature: 1.0
   top_p: 0.9
@@ -72,8 +73,8 @@ datasets:
 
 run:
   seed: 42
-  batch_size_eval: 32
-  num_workers: 32
+  batch_size_eval: 16
+  num_workers: 16
   device: "cuda"
   world-size: 2
   dist_url: "env://"
