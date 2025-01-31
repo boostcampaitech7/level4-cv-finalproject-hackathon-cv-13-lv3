@@ -5,10 +5,9 @@ export TRANSFORMERS_CACHE="/data/huggingface/transformers"
 
 # 실행할 명령어 리스트
 commands=(
-    "accelerate launch --config_file ./configs/accelerate_config_1.yaml accelerate_evaluate_salmonn.py --mode submission_aac --cfg-path salmonn_eval_unslothGemma.yaml"
-    "accelerate launch --config_file ./configs/accelerate_config_2.yaml accelerate_evaluate_salmonn.py --mode submission_aac --cfg-path salmonn_eval_whisperv3.yaml"
-    "accelerate launch --config_file ./configs/accelerate_config_3.yaml accelerate_evaluate_salmonn.py --mode submission_asr --cfg-path salmonn_eval_whisperv3turbo.yaml"
-    "accelerate launch --config_file ./configs/accelerate_config_4.yaml accelerate_evaluate_salmonn.py --mode submission_aac --cfg-path salmonn_eval_whisperv3turbo.yaml"
+    "accelerate launch --config_file ./configs/accelerate_config.yaml accelerate_evaluate_salmonn.py --mode submission_aac --cfg-path salmonn_eval_unslothGemma.yaml"
+    "accelerate launch --config_file ./configs/accelerate_config.yaml accelerate_evaluate_salmonn.py --mode submission_asr --cfg-path salmonn_eval_whisperv3turbo.yaml"
+    "accelerate launch --config_file ./configs/accelerate_config.yaml accelerate_evaluate_salmonn.py --mode submission_aac --cfg-path salmonn_eval_whisperv3turbo.yaml"
 )
 
 

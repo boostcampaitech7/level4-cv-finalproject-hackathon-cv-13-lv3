@@ -11,6 +11,9 @@ import subprocess
 from transformers import DynamicCache
 from tqdm import tqdm
 from custom_utils.Gsheet_Effi import Gsheet_param
+from dotenv import dotenv_values
+import torch.backends.cudnn as cudnn
+import random
 
 import os
 
@@ -24,6 +27,17 @@ from config import Config
 from dataset import SALMONNDataset
 from utils import get_dataloader, prepare_sample
 from models.salmonn import SALMONN
+
+
+def setup_seeds(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    cudnn.benchmark = False
+    cudnn.deterministic = True
 
 
 def load_model(salmonn_preprocessor):
@@ -81,7 +95,7 @@ def parse_args():
         "--cfg-path",
         type=str,
         help="path to configuration file",
-        default="/root/np-app-audiolm-evaluator/salmonn_eval_config.yaml",
+        default="salmonn_eval_config.yaml",
     )
 
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -109,6 +123,20 @@ def get_gpu_memory_usage():
 
 def model_inference(cfg, samples, test_prompt, salmonn):
     # TTFT
+    if salmonn.llama_tokenizer.bos_token_id is None:
+        
+            # Special Tokens 추가
+            special_tokens = {
+                "bos_token": "<|im_start|>",    # '<|im_start|>'를 BOS 토큰으로 설정
+                "eos_token": "<|im_end|>",      # EOS 토큰은 '<|im_end|>'
+                "pad_token": "[PAD]"            # PAD 토큰은 이미 설정됨
+            }
+
+            # 토크나이저에 추가
+            salmonn.llama_tokenizer.add_special_tokens(special_tokens)
+
+            # LLM의 임베딩 크기 재조정
+            salmonn.llama_model.resize_token_embeddings(len(salmonn.llama_tokenizer))
     start_time = time.time()
     llm = salmonn.llama_model
 
@@ -170,6 +198,9 @@ def model_inference(cfg, samples, test_prompt, salmonn):
 
 def main(args):
     cfg = Config(args)
+    env_path = "/data/env/.env"
+    env = dotenv_values(env_path)
+    cfg.config.model.token = env['HF_Token']
 
     print("Force batch size as 1")
     cfg.config.run.batch_size_eval = 1
@@ -228,5 +259,6 @@ def main(args):
     Gsheet_param(cfg, average_memory_usage, average_inference_time, average_ttft, average_tpot)
 
 if __name__ == "__main__":
+    setup_seeds()
     args = parse_args()
     main(args)

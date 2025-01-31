@@ -15,14 +15,14 @@ project_name : 'Salmonn'
 
 model:
   # paths
-  llama_path: "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B" # "lmsys/vicuna-13b-v1.1"
+  llama_path: "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct" # "neuralmagic/Mistral-7B-Instruct-v0.3-GPTQ-4bit"
   whisper_path: "openai/whisper-large-v2" #"openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
   token: "" # Use hf token to access gated repositories
   only_preprocessor: False
 
-  ckpt: "/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/202501250051/checkpoint_best.pth" #/data/dataset/pretrained/salmonn_v1.pth" # model used for decoding
+  ckpt: "" # "/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-whisper-large-v3-turbo-5epoch/checkpoint_best.pth"
 
   freeze_whisper: True
   freeze_beats: True
@@ -67,11 +67,12 @@ datasets:
   # test_ann_path: "data/test_aac.json" # (deprecated next update)
   test_ann_path_asr: "/data/dataset/test_asr.json"
   test_ann_path_aac: "/data/dataset/test_aac.json"
-  whisper_path: "openai/whisper-large-v3" # #"openai/whisper-large-v2"
+  whisper_path: "openai/whisper-large-v2" # #"openai/whisper-large-v2"
 
 run:
-  batch_size_eval: 3
-  num_workers: 4
+  seed: 42
+  batch_size_eval: 16
+  num_workers: 16
   device: "cuda"
   world-size: 2
   dist_url: "env://"

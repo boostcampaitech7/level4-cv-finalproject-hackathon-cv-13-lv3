@@ -20,7 +20,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
+from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig, GPTQConfig
 from peft import LoraConfig, TaskType, get_peft_model
 
 from .Qformer import BertConfig, BertLMHeadModel
@@ -127,12 +127,6 @@ class SALMONN(nn.Module):
 
         if not only_preprocessor: # 전처리 모드가 아닌 경우 (아마 Audio Encoder가 Preprocessor인 듯)
             logging.info('Loading LLaMA Model')
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-            )
             CausalLMWrapper = AutoModelForCausalLM
             if use_liger_kernel:
                 CausalLMWrapper = AutoLigerKernelForCausalLM
@@ -141,7 +135,7 @@ class SALMONN(nn.Module):
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
                     torch_dtype='auto', # FP16 precision
-                    load_in_8bit=True, # 8bit Quantzation 사용
+                    load_in_4bit=True, # 8bit Quantzation 사용
                     token=token,
                 )
             else:
@@ -149,8 +143,7 @@ class SALMONN(nn.Module):
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
-                    quantization_config=quantization_config,
-                    trust_remote_code=True,
+                    trust_remote_code=True
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
@@ -167,7 +160,7 @@ class SALMONN(nn.Module):
                     r=lora_rank, 
                     lora_alpha=lora_alpha, 
                     lora_dropout=lora_dropout,
-                    # target_modules=["q_proj", "k_proj", "v_proj", "o_proj"] # 어떤 가중치에 adapter를 적용할지 결정 (For Gemma)
+                    # target_modules= ["q_proj", "v_proj"] # 어떤 가중치에 adapter를 적용할지 결정 (For Gemma)
                 )
                 # LLM에 LoRA 적용
                 self.llama_model = get_peft_model(self.llama_model, self.peft_config)

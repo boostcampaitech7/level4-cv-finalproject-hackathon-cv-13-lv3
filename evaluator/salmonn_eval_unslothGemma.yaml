@@ -15,14 +15,14 @@ project_name : 'Salmonn'
 
 model:
   # paths
-  llama_path: "unsloth/gemma-2b-bnb-4bit" #"lmsys/vicuna-13b-v1.1"
+  llama_path: "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B" #"lmsys/vicuna-13b-v1.1"
   whisper_path: "openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
   token: "" # Use hf token to access gated repositories
   only_preprocessor: False
 
-  ckpt: /data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/unsloth_gemma-2b-bnb-4bit/checkpoint_best.pth
+  ckpt: /data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Deepseek-R1-Distill-Qwen-1.5B/checkpoint_best.pth
   #"/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-Gemma-2-2b-it-whisper-small-5epoch/checkpoint_best.pth"
 
   freeze_whisper: True
@@ -72,8 +72,8 @@ datasets:
 
 run:
   seed: 42
-  batch_size_eval: 8
-  num_workers: 8
+  batch_size_eval: 16
+  num_workers: 16
   device: "cuda"
   world-size: 2
   dist_url: "env://"
