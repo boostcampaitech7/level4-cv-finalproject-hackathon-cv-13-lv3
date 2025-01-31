@@ -40,7 +40,7 @@ model:
   freeze_speech_llama_proj: False
 
   # LoRA
-  lora: True
+  lora: False
   lora_rank: 8
   lora_alpha: 32
   lora_dropout: 0.1
@@ -51,6 +51,10 @@ model:
   test_prompt_path: "audiolm-trainer/prompts/test_prompt.json"
   max_txt_len: 300
   end_sym: "<|end_of_text|>"
+
+  low_resource: True
+  quant_method: "gptq"
+  is_train: False
 
 generate:
   max_new_tokens: 200

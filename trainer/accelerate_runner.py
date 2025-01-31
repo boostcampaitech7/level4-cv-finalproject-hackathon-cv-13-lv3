@@ -6,6 +6,7 @@ import time
 import datetime
 from pathlib import Path
 import logging
+import shutil  # 파일 상단에 import 추가 필요
 
 import torch
 import torch.distributed as dist
@@ -17,6 +18,7 @@ import wandb
 from logger import MetricLogger, SmoothedValue
 from utils import get_accelerator_dataloader, setup_accelerate_logger, get_dataloader
 from optims import get_optimizer, LinearWarmupCosineLRScheduler
+from models.utils import setup_quantized_model
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -24,7 +26,7 @@ class AccelerateRunner:
     def __init__(self, cfg, model, datasets, job_id, dryrun):
         self.config = cfg
         self.dryrun = dryrun
-
+        self.lora = None
         # log
         self.output_dir = Path(self.config.config.run.output_dir) / job_id
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +98,7 @@ class AccelerateRunner:
 
     def train_epoch(self, epoch):
         self.model.train()
-
+        
         metric_logger = MetricLogger(delimiter="  ")
         metric_logger.add_meter("lr", SmoothedValue(window_size=1, fmt="{value:.6f}"))
         metric_logger.add_meter("loss", SmoothedValue(window_size=1, fmt="{value:.4f}"))
@@ -113,11 +115,13 @@ class AccelerateRunner:
                 break
             
             samples = next(self.train_loader)
-            # numpy array를 tensor로 변환하고 모든 텐서를 한번에 디바이스로 이동
-            samples = {k: torch.tensor(v, device=self.device) if isinstance(v, np.ndarray) 
-                      else v.to(self.device) if isinstance(v, torch.Tensor) 
-                      else v for k, v in samples.items()}
-
+            
+            # 비동기 데이터 전송
+            with torch.cuda.stream(torch.cuda.Stream()):
+                samples = {k: v.to(self.device, non_blocking=True) 
+                          if isinstance(v, torch.Tensor) else v 
+                          for k, v in samples.items()}
+            
             if not self.dryrun:
                 with self.accelerator.accumulate():
                     with self.accelerator.autocast():
@@ -125,7 +129,7 @@ class AccelerateRunner:
                     
                     self.accelerator.backward(loss)
                     self.optimizer.step()
-                    self.optimizer.zero_grad()
+                    self.optimizer.zero_grad(set_to_none=True)  # 메모리 효율적
                     self.scheduler.step(cur_epoch=epoch, cur_step=i)
 
                 metric_logger.update(loss=loss.item())
@@ -315,6 +319,8 @@ class AccelerateRunner:
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         logging.info("Training time {}".format(total_time_str))
+        
+        self.save_quantized_llm_model(self.model, self.output_dir)
 
     def log_config(self):
         if self.accelerator.is_local_main_process:
@@ -358,3 +364,23 @@ class AccelerateRunner:
         )
         logging.info("Saving checkpoint at epoch {} to {}.".format(cur_epoch, save_to))
         torch.save(save_obj, save_to) 
+        
+        if is_best:
+            self.lora = model_no_ddp.llama_model.unload_adapter()
+        
+    def save_quantized_llm_model(self, output_dir):
+        merged_dir = os.path.join(output_dir, "llm_lora")
+
+        self.model.merge_lora_and_save(self.lora, merged_dir)
+        
+        # 양자화된 모델 저장
+        quantize_dir = os.path.join(output_dir, "quantized_model")
+        quantized_model = setup_quantized_model(merged_dir, self.token, self.config.config.model.ptq_method, is_train=False)
+        quantized_model.save_pretrained(quantize_dir)
+        
+        # 병합된 모델 디렉토리 삭제
+        if os.path.exists(merged_dir):
+            shutil.rmtree(merged_dir)
+            logging.info(f"Removed temporary merged model directory: {merged_dir}")
+        
+                

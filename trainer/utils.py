@@ -298,12 +298,6 @@ def Gsheet_param(cfg):
 def get_accelerator_dataloader(dataset, config, is_train=True):
     """
     Accelerator에서 사용할 데이터로더를 생성합니다.
-    Args:
-        dataset: 데이터셋 객체
-        config: 설정 객체
-        is_train: 학습용 데이터로더인지 여부
-    Returns:
-        DataLoader: PyTorch DataLoader 객체
     """
     loader = DataLoader(
         dataset,
@@ -313,6 +307,9 @@ def get_accelerator_dataloader(dataset, config, is_train=True):
         collate_fn=dataset.collater,
         drop_last=is_train,
         shuffle=is_train,
+        persistent_workers=True,
+        prefetch_factor=2,
+        pin_memory_device="cuda"  # GPU 메모리에 직접 핀
     )
 
     if is_train:

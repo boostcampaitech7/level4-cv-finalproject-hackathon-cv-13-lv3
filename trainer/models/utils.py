@@ -14,7 +14,8 @@
 
 import torch
 from transformers import StoppingCriteria
-from .quantization_configs import setup_awq_model, setup_gptq_model, setup_qlora_model
+from .quantization_configs import setup_awq_model, setup_gptq_model, setup_qlora_model, setup_hybrid_quant_model
+from peft import prepare_model_for_kbit_training
 
 class StoppingCriteriaSub(StoppingCriteria):
 
@@ -31,32 +32,52 @@ class StoppingCriteriaSub(StoppingCriteria):
     
 
 # 공통 후처리 및 최적화 함수
-def post_quantization_optimization(model):
-    # 메모리 최적화
-    model.config.use_cache = False  # 캐시 비활성화로 메모리 사용량 감소
+def post_quantization_optimization(model, is_train=True):
+    """
+    학습/추론에 따른 최적화 설정 적용
+    """
+    if is_train:
+        # 학습 시에만 필요한 설정
+        model.config.use_cache = False
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
+    else:
+        # 추론 시에만 필요한 설정
+        model.config.use_cache = True
     
-    # (선택사항) Flash Attention 활성화
-    if hasattr(model, 'enable_flash_attention'):
-        model.enable_flash_attention()
+    # 공통 최적화 설정
+    torch.cuda.empty_cache()
     
-    # (선택사항) 모델 융합 최적화
+    # Flash Attention 2.0 사용 (가능한 경우)
+    if hasattr(model.config, "use_flash_attention_2"):
+        model.config.use_flash_attention_2 = True
+            
+    # 컴파일 최적화 (메모리 누수 방지)
     if torch.cuda.is_available():
-        model = torch.compile(model, mode="reduce-overhead")
-    
+        model = torch.compile(
+            model, 
+            mode="reduce-overhead"
+        )
     return model
 
 # 실제 사용 예시
-def setup_quantized_model(model_path, token, quant_method="awq"):
-    if quant_method == "awq":
-        model = setup_awq_model(model_path, token)
-    elif quant_method == "gptq":
-        model = setup_gptq_model(model_path, token)
-    elif quant_method == "qlora":
+def setup_quantized_model(model_path, token, quant_method="awq", is_train=True):
+    if quant_method == "qlora":
         model = setup_qlora_model(model_path, token)
+    elif quant_method == "awq":
+        model = setup_awq_model(model_path, token, "c4-new")
+    elif quant_method == "gptq":
+        model = setup_gptq_model(model_path, token, "c4-new")
+    elif quant_method == "hybrid":
+        model = setup_hybrid_quant_model(model_path, token)
     else:
         raise ValueError(f"Unsupported quantization method: {quant_method}")
+
+    if is_train:
+        # LoRA 학습을 위한 모델 준비
+        model = prepare_model_for_kbit_training(model)
     
-    # 후처리 최적화 적용
-    model = post_quantization_optimization(model)
+    # 학습/추론 모드에 따른 최적화 적용
+    model = post_quantization_optimization(model, is_train=is_train)
     
     return model

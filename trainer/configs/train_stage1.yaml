@@ -16,8 +16,8 @@ model:
   torch_compile_mode: "max-autotune"
   liger_kernel: True
   # paths
-  llama_path: "TinyLlama/TinyLlama_v1.1"
-  whisper_path: "openai/whisper-large-v3-turbo" #"openai/whisper-large-v2"
+  llama_path: "meta-llama/Llama-3.2-3B-Instruct"
+  whisper_path: "openai/whisper-large-v3" #"openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
   token: "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" # "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" # for Gemma  #"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"  # Use hf token to access gated repositories
@@ -52,7 +52,10 @@ model:
   end_sym: "<|end_of_text|>"   # TODO: change eos token
 
   low_resource: True
-  quant_method: "qlora"
+  quant_method: "gptq"
+  use_ptq: True # post-training quantization
+  ptq_method: "awq"
+  is_train: True
 datasets:
   prefix: "/data/dataset"
   

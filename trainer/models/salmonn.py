@@ -93,6 +93,7 @@ class SALMONN(nn.Module):
         end_sym="</s>",
         low_resource=False,  # use 8 bit
         quant_method="qlora",
+        is_train=True,
         device_8bit=0,  # the device of 8bit model should be set when loading and cannot be changed anymore.
         token=None,
         only_preprocessor=None,
@@ -101,6 +102,8 @@ class SALMONN(nn.Module):
     ):
         super().__init__()
 
+        self.llama_path = llama_path
+        self.token = token
         self.beats_path = beats_path
         self.use_speech_Qformer = use_speech_Qformer
         self.window_level_Qformer = window_level_Qformer
@@ -138,7 +141,7 @@ class SALMONN(nn.Module):
                 #     quantization_config=quant_config,
                 # )
                 # self.llama_model = prepare_model_for_kbit_training(self.llama_model)
-                self.llama_model = setup_quantized_model(llama_path, token, quant_method=quant_method)
+                self.llama_model = setup_quantized_model(llama_path, token, quant_method=quant_method, is_train=is_train)
             else:
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
@@ -470,7 +473,7 @@ class SALMONN(nn.Module):
             return {"loss": loss, "correct": correct, "total": total}
 
         return {"loss": loss}
-
+    
     # Sample에 대한 출력 생성
     def generate(self, samples, generate_cfg, prompts=None):
         batch_size = samples["spectrogram"].shape[0]
@@ -516,6 +519,37 @@ class SALMONN(nn.Module):
 
         return text
 
+    def merge_lora_and_save(self, lora, output_dir):
+        logging.info('Loading LLaMA Model')
+        CausalLMWrapper = AutoModelForCausalLM
+        if self.use_liger_kernel:
+            CausalLMWrapper = AutoLigerKernelForCausalLM
+        
+        # 기본 모델 로드
+        merged_model = CausalLMWrapper.from_pretrained(
+            self.llama_path,
+            torch_dtype=torch.float16,
+            token=self.token,
+        )
+
+        # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
+        merged_model.resize_token_embeddings(len(self.llama_tokenizer))
+        
+        # LoRA 어댑터 로드
+        logging.info('Loading LoRA adapter')
+        merged_model.load_adapter(lora)
+        
+        # LoRA 가중치를 기본 모델과 병합
+        logging.info('Merging LoRA weights with base model')
+        merged_model = merged_model.merge_and_unload()
+        
+        logging.info('LoRA merging completed')
+        
+        # 모델 저장
+        merged_model.save_pretrained(output_dir)
+        
+        return merged_model
+
     @classmethod
     def from_config(cls, config):
         torch_compile_mode = config.get("torch_compile_mode", "max-autotune")
@@ -549,6 +583,7 @@ class SALMONN(nn.Module):
         end_sym = config.get("end_sym", "</s>")
         low_resource = config.get("low_resource", False)
         quant_method = config.get("quant_method", "qlora")
+        is_train = config.get("is_train", True)
         device_8bit = config.get("device_8bit", 0)
 
         token = config.get("token", None)
@@ -580,6 +615,7 @@ class SALMONN(nn.Module):
             end_sym=end_sym,
             low_resource=low_resource,
             quant_method=quant_method,
+            is_train=is_train,
             device_8bit=device_8bit,
             token=token,
             only_preprocessor=only_preprocessor,
