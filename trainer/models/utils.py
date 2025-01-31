@@ -14,7 +14,7 @@
 
 import torch
 from transformers import StoppingCriteria
-from .quantization_configs import setup_awq_model, setup_gptq_model, setup_qlora_model, setup_hybrid_quant_model
+from .quantization_configs import setup_awq_model, setup_gptq_model, setup_qlora_model, setup_hybrid_quant_model, setup_eetq_model, setup_hqq_model
 from peft import prepare_model_for_kbit_training
 
 class StoppingCriteriaSub(StoppingCriteria):
@@ -70,6 +70,10 @@ def setup_quantized_model(model_path, token, quant_method="awq", is_train=True):
         model = setup_gptq_model(model_path, token, "c4-new")
     elif quant_method == "hybrid":
         model = setup_hybrid_quant_model(model_path, token)
+    elif quant_method == "eetq":
+        model = setup_eetq_model(model_path, token)
+    elif quant_method == "hqq":
+        model = setup_hqq_model(model_path, token)
     else:
         raise ValueError(f"Unsupported quantization method: {quant_method}")
 
