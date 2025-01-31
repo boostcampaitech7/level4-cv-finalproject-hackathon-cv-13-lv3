@@ -14,7 +14,7 @@ def Gsheet_param(cfg, *args):
     gc = gspread.service_account(env['JSON_PATH'])
 
     # url에 따른 spread sheet 열기
-    doc = gc.open_by_url(env['URL'])
+    doc = gc.open_by_url(env['URL_Efficiency'])
 
     # 저장할 변수 dict 선언
     param_dict = dict()

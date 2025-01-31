@@ -18,6 +18,7 @@ import contextlib
 import random
 
 import torch
+# torch._dynamo.config.disable = True  # Dynamo를 완전히 비활성화
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
