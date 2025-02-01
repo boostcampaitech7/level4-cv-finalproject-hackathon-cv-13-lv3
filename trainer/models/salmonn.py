@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from peft import LoraConfig, TaskType, get_peft_model
 
-from .modeling_bert import BertConfig, BertLMHeadModel
+from .Qformer_sdpa import BertConfig, BertLMHeadModel
 from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
@@ -36,16 +36,14 @@ class SALMONN(nn.Module):
     def init_speech_Qformer(cls, num_query_token, speech_width, num_hidden_layers=2):
         encoder_config = BertConfig.from_pretrained("bert-base-uncased",
                                                     low_cpu_mem_usage=True,  # CPU 메모리 사용 최소화
-                                                    attn_implementation="sdpa",  # SDPA 어텐션 활성화
                                                     torch_dtype="auto")         # 자동 혼합 정밀도) # BERT의 기본 설정 로드
         encoder_config.num_hidden_layers = num_hidden_layers
         encoder_config.encoder_width = speech_width
         # insert cross-attention layer every other block
-        encoder_config.is_decoder = True
         encoder_config.add_cross_attention = True
         encoder_config.cross_attention_freq = 1
         encoder_config.query_length = num_query_token
-        Qformer = BertLMHeadModel(config=encoder_config) # BERT 모델 초기화
+        Qformer = BertLMHeadModel(config=encoder_config) # BERT 모델 초기화szw
         # 0으로 초기화된 Query Token 생성
         query_tokens = nn.Parameter(
             torch.zeros(1, num_query_token, encoder_config.hidden_size) 
@@ -226,7 +224,6 @@ class SALMONN(nn.Module):
             # Embedding layer 제거
             self.speech_Qformer.bert.embeddings.word_embeddings = None
             self.speech_Qformer.bert.embeddings.position_embeddings = None
-            self.speech_Qformer.bert.embeddings.token_type_embeddings = None
             # BERT Encoder의 모든 레이어 제거
             for layer in self.speech_Qformer.bert.encoder.layer:
                 layer.output = None
@@ -238,6 +235,8 @@ class SALMONN(nn.Module):
                 self.speech_Qformer.eval()
                 self.speech_query_tokens.requires_grad = False
                 logging.info("freeze Speech QFormer")
+            
+            self.speech_Qformer = torch.compile(self.speech_Qformer, mode=torch_compile_mode,dynamic=False, fullgraph=True)
 
             logging.info('Loading speech LLAMA proj')
             if only_preprocessor:

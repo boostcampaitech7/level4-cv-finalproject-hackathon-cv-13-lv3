@@ -16,8 +16,8 @@ model:
   torch_compile_mode: "max-autotune"
   liger_kernel: True
   # paths
-  llama_path: "TinyLlama/TinyLlama_v1.1"
-  whisper_path: "openai/whisper-large-v3-turbo" #"openai/whisper-large-v2"
+  llama_path: "meta-llama/Llama-3.2-3B-Instruct"
+  whisper_path: "openai/whisper-large-v3" #"openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
   token: "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" # "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" # for Gemma  #"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"  # Use hf token to access gated repositories
@@ -58,7 +58,7 @@ datasets:
   valid_ann_path: "/data/dataset/stage1_valid_01.json"
   test_ann_path: "/data/dataset/test_aac.json"
 
-  whisper_path: "openai/whisper-large-v3-turbo" # "openai/whisper-large-v2"
+  whisper_path: "openai/whisper-large-v3" # "openai/whisper-large-v2"
 
 run:
   # log & settings
@@ -72,7 +72,7 @@ run:
   epoch_based: False
   iters_per_epoch: 3000
   accum_grad_iters: 1
-  batch_size_train: 16
+  batch_size_train: 8
   batch_size_eval: 8
   num_workers: 8
 
