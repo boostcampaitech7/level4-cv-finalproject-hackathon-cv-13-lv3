@@ -1,5 +1,6 @@
 import torch
 from transformers import StoppingCriteria,  BitsAndBytesConfig, GPTQConfig, AutoModelForCausalLM, AwqConfig, EetqConfig, HqqConfig
+from awq import AutoAWQForCausalLM
 
 # AWQ, GTPQ 방식은 LoRA 방식이 지원되는지 확실하지 않음 - 확인 필요
 # 만약 안된다면 LoRA adapter만 따로 추출한 뒤 원래 LLM에 병합시켜 한 모델로 만든 뒤
@@ -7,16 +8,21 @@ from transformers import StoppingCriteria,  BitsAndBytesConfig, GPTQConfig, Auto
 
 # AWQ 방식 - 추론 속도 최적화에 적합 (실시간 추론)
 def setup_awq_model(model_path, token, datasets):
-    quant_config = AwqConfig(
-        bits=4,
-        dataset=datasets
-    )
+    quant_config = {"zero_point": True, "q_group_size": 128, "w_bit": 4}
         
-    model = AutoModelForCausalLM.from_pretrained(
+    model = AutoAWQForCausalLM.from_pretrained(
         model_path,
-        token=token,
-        quantization_config=quant_config
+        token=token
     )
+    
+    model.quantize(quant_config)
+    
+    quantization_config = AwqConfig(
+        bits=quant_config["w_bit"],
+        group_size=quant_config["q_group_size"],
+        zero_point=quant_config["zero_point"],
+    ).to_dict()
+    model.model.config.quantization_config = quantization_config
     
     return model
 
@@ -50,10 +56,12 @@ def setup_qlora_model(model_path, token):
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.float16,  # bfloat16 대신 float16 사용
-        llm_int8_threshold=6.0,
-        llm_int8_has_fp16_weight=True,
-        bnb_4bit_use_cpu_offload=False  # GPU 메모리가 충분한 경우
+        bnb_4bit_compute_dtype=torch.float16,
+        # llm_int8_threshold=6.0,
+        # llm_int8_has_fp16_weight=True,
+        # bnb_4bit_use_cpu_offload=False,
+        # trust_remote_code=True,
+        # use_nested_quant=True  # 중첩 양자화 사용
     )
     
     # 기본 모델 로드 및 4bit 양자화 적용
@@ -61,8 +69,8 @@ def setup_qlora_model(model_path, token):
         model_path,
         token=token,
         quantization_config=quant_config,
-        low_cpu_mem_usage=True,
-        torch_dtype=torch.float16
+        # torch_dtype=torch.float16,  # bfloat16으로 통일
+        # use_cache=False  # 학습시 캐시 비활성화
     )
     
     return model
@@ -73,9 +81,13 @@ def setup_hybrid_quant_model(model_path, token):
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         mixed_precision=True,  # 중요 레이어는 8-bit 유지
-        target_modules=["attn", "ffn"]  # 레이어 타겟팅
+        # target_modules=["attn", "ffn"]  # 레이어 타겟팅
     )
-    model = AutoModelForCausalLM.from_pretrained(model_path, token=token, quantization_config=quant_config)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path, 
+        token=token, 
+        quantization_config=quant_config
+    )
     return model
 
 # EETQ 방식 (LLM.int() 방식 보다 빠른 8-bit 양자화로 알려짐)

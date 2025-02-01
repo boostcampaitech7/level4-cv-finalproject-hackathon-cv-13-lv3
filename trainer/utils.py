@@ -307,8 +307,8 @@ def get_accelerator_dataloader(dataset, config, is_train=True):
         collate_fn=dataset.collater,
         drop_last=is_train,
         shuffle=is_train,
-        persistent_workers=True,
-        prefetch_factor=2,
+        persistent_workers=True,  # 워커 유지
+        prefetch_factor=2,  # 프리페치 설정
         pin_memory_device="cuda"  # GPU 메모리에 직접 핀
     )
 

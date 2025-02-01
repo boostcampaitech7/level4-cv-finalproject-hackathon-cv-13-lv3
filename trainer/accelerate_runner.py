@@ -173,7 +173,7 @@ class AccelerateRunner:
 
         for i, samples in enumerate(metric_logger.log_every(dataloader, self.config.config.run.log_freq, header=header)):
             if not self.dryrun:
-                with self.accelerator.autocast():
+                with self.accelerator.autocast(self.model):
                     forward_result = model(samples, verbose=True)
                     
                 loss = forward_result.get("loss", 0)
@@ -370,7 +370,10 @@ class AccelerateRunner:
         # 양자화된 모델 저장
         quantize_dir = os.path.join(output_dir, "quantized_model")
         quantized_model = setup_quantized_model(merged_dir, self.token, self.config.config.model.ptq_method, is_train=False)
-        quantized_model.save_pretrained(quantize_dir)
+        if self.config.config.model.ptq_method == "awq":
+            quantized_model.save_quantized(quantize_dir)
+        else:   
+            quantized_model.save_pretrained(quantize_dir)
         
         # 병합된 모델 디렉토리 삭제
         if os.path.exists(merged_dir):

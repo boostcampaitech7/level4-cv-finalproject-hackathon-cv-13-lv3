@@ -41,6 +41,7 @@ def post_quantization_optimization(model, is_train=True):
         model.config.use_cache = False
         if hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
+            model.enable_input_require_grads()  # 그래디언트 체크포인팅 최적화
     else:
         # 추론 시에만 필요한 설정
         model.config.use_cache = True
@@ -52,7 +53,7 @@ def post_quantization_optimization(model, is_train=True):
     if hasattr(model.config, "use_flash_attention_2"):
         model.config.use_flash_attention_2 = True
             
-    # 컴파일 최적화 (메모리 누수 방지)
+    # 컴파일 최적화
     if torch.cuda.is_available():
         model = torch.compile(
             model, 
