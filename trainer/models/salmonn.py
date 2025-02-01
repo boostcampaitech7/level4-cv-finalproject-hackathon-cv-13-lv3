@@ -468,7 +468,9 @@ class SALMONN(nn.Module):
             mask = (labels != -100)
             correct = (results[mask] == labels[mask]).float().sum()
             total = len(labels[mask])
-
+        
+        torch.cuda.empty_cache()
+        
         if verbose:
             return {"loss": loss, "correct": correct, "total": total}
 

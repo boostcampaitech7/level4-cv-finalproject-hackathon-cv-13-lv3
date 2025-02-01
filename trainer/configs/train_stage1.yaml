@@ -40,8 +40,8 @@ model:
 
   # LoRA
   lora: True
-  lora_rank: 8
-  lora_alpha: 32
+  lora_rank: 4
+  lora_alpha: 16
   lora_dropout: 0.1
 
   multi_prompt: True
@@ -52,9 +52,9 @@ model:
   end_sym: "<|end_of_text|>"   # TODO: change eos token
 
   low_resource: True
-  quant_method: "gptq"
-  use_ptq: True # post-training quantization
-  ptq_method: "awq"
+  quant_method: "qlora"
+  use_ptq: False # post-training quantization
+  ptq_method: "gptq"
   is_train: True
 datasets:
   prefix: "/data/dataset"

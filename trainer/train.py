@@ -112,6 +112,7 @@ def main():
     torch.set_float32_matmul_precision('high')
 
     torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     # torch.backends.cudnn.benchmark = True  # 입력 크기가 고정된 경우
     # torch.backends.cudnn.deterministic = False  # 재현성보다 속도 우선
     # torch.backends.cuda.memory_efficient = True  # 메모리 효율적 SDPA 활성화

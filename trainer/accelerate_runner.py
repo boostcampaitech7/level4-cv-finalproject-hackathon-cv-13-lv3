@@ -110,24 +110,23 @@ class AccelerateRunner:
         )
         header = "Train: data epoch: [{}]".format(epoch)
 
+        torch.cuda.empty_cache()
         for i in metric_logger.log_every(range(self.iters_per_epoch), self.config.config.run.log_freq, header=header, logger=self.log_writter, start_step=epoch*self.iters_per_epoch):
             if i >= self.iters_per_epoch:
                 break
             
             samples = next(self.train_loader)
-            
-            # 비동기 데이터 전송
-            with torch.cuda.stream(torch.cuda.Stream()):
-                samples = {k: v.to(self.device, non_blocking=True) 
-                          if isinstance(v, torch.Tensor) else v 
-                          for k, v in samples.items()}
-            
+
             if not self.dryrun:
-                with self.accelerator.accumulate():
+                with self.accelerator.accumulate(self.model):
                     with self.accelerator.autocast():
                         loss = self.model(samples)["loss"]
                     
                     self.accelerator.backward(loss)
+                    # 옵티마이저 스텝 전 스케일러 동기화
+                    if self.accelerator.scaler:
+                        self.accelerator.scaler.unscale_(self.optimizer)
+                    self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)  # 그래디언트 클리핑 추가
                     self.optimizer.step()
                     self.optimizer.zero_grad(set_to_none=True)  # 메모리 효율적
                     self.scheduler.step(cur_epoch=epoch, cur_step=i)
@@ -174,11 +173,6 @@ class AccelerateRunner:
 
         for i, samples in enumerate(metric_logger.log_every(dataloader, self.config.config.run.log_freq, header=header)):
             if not self.dryrun:
-                # 여기에 디바이스 이동 코드 추가
-                samples = {k: torch.tensor(v, device=self.device) if isinstance(v, np.ndarray) 
-                          else v.to(self.device) if isinstance(v, torch.Tensor) 
-                          else v for k, v in samples.items()}
-
                 with self.accelerator.autocast():
                     forward_result = model(samples, verbose=True)
                     

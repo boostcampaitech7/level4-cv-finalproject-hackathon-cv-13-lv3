@@ -61,7 +61,8 @@ def setup_qlora_model(model_path, token):
         model_path,
         token=token,
         quantization_config=quant_config,
-        low_cpu_mem_usage=True
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.float16
     )
     
     return model
