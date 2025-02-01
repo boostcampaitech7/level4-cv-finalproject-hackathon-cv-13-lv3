@@ -13,9 +13,11 @@
 # limitations under the License.
 project_name : 'Salmonn'
 model:
+  torch_compile_mode: "max-autotune"
+  liger_kernel: False
   # paths
   llama_path: "meta-llama/Llama-3.2-3B-Instruct"
-  whisper_path: "openai/whisper-tiny" #"openai/whisper-large-v2"
+  whisper_path: "openai/whisper-large-v2" #"openai/whisper-large-v2"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
 
   token: "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" # "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" # for Gemma  #"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"  # Use hf token to access gated repositories
@@ -52,11 +54,11 @@ model:
 datasets:
   prefix: "/data/dataset"
   
-  train_ann_path: "/data/dataset/stage1_train_99.json"
-  valid_ann_path: "/data/dataset/stage1_valid_01.json"
+  train_ann_path: "/data/dataset/stage1_train_90.json"
+  valid_ann_path: "/data/dataset/stage1_valid_10.json"
   test_ann_path: "/data/dataset/test_aac.json"
 
-  whisper_path: "openai/whisper-tiny" # "openai/whisper-large-v2"
+  whisper_path: "openai/whisper-large-v2" # "openai/whisper-large-v2"
 
 run:
   # log & settings
@@ -66,6 +68,7 @@ run:
   exp_name: "llama-3.2-1B-1percent-stage1"
 
   log_freq: 5
+  log_level_warning: True # log level이 Info면 모델의 layer도 전부 출력
   epoch_based: False
   iters_per_epoch: 3000
   accum_grad_iters: 1

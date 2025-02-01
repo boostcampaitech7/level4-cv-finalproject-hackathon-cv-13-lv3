@@ -20,7 +20,14 @@ def validate_csv(file_path):
         if not df['text'].apply(lambda x: isinstance(x, str)).all():
             return "Error: All values in the 'text' column must be strings."
 
+        # 4. Check for duplicate testset_ids
+        duplicates = df['testset_id'].duplicated()
+        if duplicates.any():
+            duplicate_ids = df['testset_id'][duplicates].tolist()
+            return f"Error: Duplicate testset_ids found: {', '.join(duplicate_ids)}"
+
         return "Validation passed: The CSV file is valid."
+    
     
     except FileNotFoundError:
         return "Error: The specified file was not found."
