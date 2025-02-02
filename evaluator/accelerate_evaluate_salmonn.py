@@ -71,45 +71,96 @@ def replace_test_ann_path(cfg, task):
     return cfg
 
 def set_tensorrt(model):
-    # os.makedirs("tmp/trt_cache", exist_ok=True)
-    speech_encoder = model.speech_encoder
-    speech_encoder = torch.compile(speech_encoder, backend="torch_tensorrt")
-    # speech_encoder = torch_tensorrt.compile(speech_encoder, ir="dynamo", inputs=inputs)
+    cache_dir = "tmp/trt_cache"
+    if os.path.exists(cache_dir):
+        import shutil
+        shutil.rmtree(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
     
-    beats = model.beats
-    beats = torch.compile(beats, backend="torch_tensorrt")
-
-    speech_Qformer = model.speech_Qformer
-    speech_Qformer = torch.compile(speech_Qformer, backend="torch_tensorrt")
-
-    llm = model.llama_model
-    llm = torch.compile(llm, backend="torch_tensorrt")
-    # cache engine을 사용해 여러번 반복되는 계산을 최적화 (맨 처음엔 속도가 느리지만 두번째 이후엔 빠름)
-    # llm = torch.compile(
-    #     llm,
-    #     backend="tensorrt",
+    torch.cuda.empty_cache()
+    model = model.cuda()
+    torch_tensorrt.runtime.set_multi_device_safe_mode(True)
+    torch_tensorrt.runtime.set_cudagraphs_mode(True)
+    
+    speech_inputs = [
+        torch_tensorrt.Input(
+            shape=[16, 80, 1500],  
+            dtype=torch.int64,  # float16에서 int64로 변경
+            device='cuda'
+        )
+    ]
+    speech_encoder = model.speech_encoder
+    # speech_encoder = torch.compile(
+    #     speech_encoder, 
+    #     backend="torch_tensorrt",
     #     options={
-    #         "use_python_runtime": True,
-    #         "enabled_precisions": [torch.float16, torch.int8],
+    #         "min_block_size": 2,
+    #         "make_refittable": True,
+    #         "use_python_runtime": False,
+    #         "enabled_precisions": [torch.float16],
     #         "immutable_weights": False,
     #         "cache_built_engines": True,
     #         "reuse_cached_engines": True,
-    #         "engine_cache_dir": "tmp/trt_cache"
+    #         "engine_cache_dir": cache_dir,
+    #         "timing_cache_prefix": "speech_encoder"  # 캐시 파일 구분
     #     }
     # )
+    # speech_encoder = torch_tensorrt.compile(speech_encoder, ir="dynamo", inputs=speech_inputs)
+    
+    beats = model.beats
+    # beats = torch.compile(beats, mode="max-autotune")
 
+    speech_Qformer = model.speech_Qformer
+    # speech_Qformer = torch.compile(speech_Qformer, backend="torch_tensorrt")
+    
+    # PEFT 레이어 병합
+    llm = model.llama_model
+    if hasattr(llm, "merge_and_unload"):
+        llm = llm.merge_and_unload()
+    
+    llm.config.use_cache = False
+    # llm = torch.compile(llm, backend="torch_tensorrt")
+    # cache engine을 사용해 여러번 반복되는 계산을 최적화 (맨 처음엔 속도가 느리지만 두번째 이후엔 빠름)
+    llm_inputs = [
+        torch_tensorrt.Input(
+            shape=[8, 1500],  
+            dtype=torch.int64,  # float16에서 int64로 변경
+            device='cuda'
+        )
+    ]
+    # llm = torch.compile(llm, backend="tensorrt")    
+    llm = torch_tensorrt.compile(
+        llm,
+        ir="dynamo",
+        inputs=llm_inputs,
+        use_python_runtime=False,
+        enabled_precisions=[torch.float16],
+        immutable_weights=False,
+        make_refittable=True,
+        cache_built_engines=True,
+        reuse_cached_engines=True,
+        engine_cache_dir=cache_dir,
+        timing_cache_prefix="llm",
+        optimization_level=1,
+        truncate_long_and_double=True,
+        refit=False,
+        max_workspace_size=4 * (1 << 30),
+        device='cuda'
+    )
+    
     model.speech_encoder = speech_encoder
     model.beats = beats
     model.speech_Qformer = speech_Qformer
     model.llama_model = llm
     
+    torch.cuda.empty_cache()
     return model
 
 def load_aot_models():
-    speech_encoder = torch_tensorrt.load("speech_trt.ep")
-    beats = torch_tensorrt.load("beats_trt.ep")
-    speech_Qformer = torch_tensorrt.load("qformer_trt.ep")
-    llm = torch_tensorrt.load("llm_trt.ep")
+    speech_encoder = torch_tensorrt.load("speech_trt.ep").cuda()
+    beats = torch_tensorrt.load("beats_trt.ep").cuda()
+    speech_Qformer = torch_tensorrt.load("qformer_trt.ep").cuda()
+    llm = torch_tensorrt.load("llm_trt.ep").cuda()
     
     # cudagraph 활성화
     torch_tensorrt.runtime.set_cudagraph_enabled(True)
@@ -134,14 +185,12 @@ def main():
     
     # Set models to eval mode
     salmonn_preprocessor.eval()
-    if cfg.config.run.jit_mode:
-        salmonn_preprocessor = set_tensorrt(salmonn_preprocessor)
-    else:
-        speech_encoder, beats, speech_Qformer, llm = load_aot_models()
-        salmonn_preprocessor.speech_encoder = speech_encoder
-        salmonn_preprocessor.beats = beats
-        salmonn_preprocessor.speech_Qformer = speech_Qformer
-        salmonn_preprocessor.llama_model = llm
+    # else:
+    #     speech_encoder, beats, speech_Qformer, llm = load_aot_models()
+    #     salmonn_preprocessor.speech_encoder = speech_encoder
+    #     salmonn_preprocessor.beats = beats
+    #     salmonn_preprocessor.speech_Qformer = speech_Qformer
+    #     salmonn_preprocessor.llama_model = llm
     
     # Load data
     dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
@@ -151,6 +200,9 @@ def main():
         salmonn_preprocessor.encode_speech, salmonn_preprocessor.prompt_wrap, tokenizer, salmonn_preprocessor.llama_model, dataloader
     )
 
+    if cfg.config.run.jit_mode:
+        salmonn_preprocessor = set_tensorrt(salmonn_preprocessor)
+        
     # # Debugging output
     # print(f"Type of llama_model: {type(llama_model)}")
     # print(f"Has 'module' attribute: {hasattr(llama_model, 'module')}")
@@ -230,6 +282,8 @@ def main():
             
             if not args.make_submission:
                 local_refs.extend(samples["text"])
+                
+            torch.cuda.empty_cache()
     
         # 모든 프로세스의 처리가 끝난 후 한번에 gather
         accelerator.wait_for_everyone()

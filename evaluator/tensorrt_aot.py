@@ -14,6 +14,7 @@ import pandas as pd
 from tqdm import tqdm
 from accelerate import Accelerator
 from torch_tensorrt.dynamo import refit_module_weights
+from torch_tensorrt.ptq import DataLoaderCalibrator, CalibrationAlgo
 
 # Add custom module path
 sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
@@ -62,6 +63,14 @@ def get_dataset(dataset_cfg, run_cfg, task):
     )
     test_loader = get_accelerator_dataloader(testset, run_cfg, is_train=False)
     return test_loader
+
+def get_calibrator(dataloader):
+    return DataLoaderCalibrator(
+        dataloader,
+        cache_file="./tmp/trt_cache/calibration.cache",
+        algo_type=CalibrationAlgo.ENTROPY_CALIBRATION_2,
+        device="cuda"
+    )
 
 def replace_test_ann_path(cfg, task):
     if "test_ann_path" not in cfg.config.datasets.keys():
@@ -154,7 +163,8 @@ def save_llm_trt(llm):
             min_shape=[1, 1500],  # [batch_size, sequence_length]
             opt_shape=[32, 1500],  # LLaMA의 입력 시퀀스 길이
             max_shape=[64, 1500],  # Whisper의 출력 길이와 맞춤
-            dtype=torch.half,
+            dtype=torch.int32,
+            device='cuda'
         )
     ]
     
@@ -170,7 +180,9 @@ def save_llm_trt(llm):
         use_explicit_typing=True,
         immutable_weights=False,
         reuse_cached_engines=True,
-        cache_built_engines=True
+        cache_built_engines=True,
+        max_workspace_size=4 * (1 << 30),
+        device='cuda'
     )
     torch_tensorrt.save(llm, "llm_trt.ep", inputs=inputs)
 
@@ -206,7 +218,10 @@ def main():
     # Set models to eval mode
     salmonn_preprocessor.eval().cuda()
 
-    
+    save_speech_encoder_trt(salmonn_preprocessor.speech_encoder)
+    save_beats_trt(salmonn_preprocessor.beats)
+    save_speech_Qformer_trt(salmonn_preprocessor.speech_Qformer)
+    save_llm_trt(salmonn_preprocessor.llama_model)
     
     
     # Load data

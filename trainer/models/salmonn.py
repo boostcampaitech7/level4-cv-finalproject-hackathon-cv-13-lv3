@@ -136,6 +136,7 @@ class SALMONN(nn.Module):
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
+                    # load_in_4bit=True
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
