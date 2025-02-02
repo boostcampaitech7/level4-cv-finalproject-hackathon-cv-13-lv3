@@ -78,3 +78,4 @@ run:
   world-size: 2
   dist_url: "env://"
   distributed: True
+  jit_mode: True

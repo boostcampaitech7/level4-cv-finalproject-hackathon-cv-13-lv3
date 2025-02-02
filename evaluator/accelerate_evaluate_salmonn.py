@@ -9,6 +9,7 @@ from pathlib import Path
 
 # Third-party imports
 import torch
+import torch_tensorrt
 import pandas as pd
 from tqdm import tqdm
 from accelerate import Accelerator
@@ -69,6 +70,51 @@ def replace_test_ann_path(cfg, task):
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_aac
     return cfg
 
+def set_tensorrt(model):
+    # os.makedirs("tmp/trt_cache", exist_ok=True)
+    speech_encoder = model.speech_encoder
+    speech_encoder = torch.compile(speech_encoder, backend="torch_tensorrt")
+    # speech_encoder = torch_tensorrt.compile(speech_encoder, ir="dynamo", inputs=inputs)
+    
+    beats = model.beats
+    beats = torch.compile(beats, backend="torch_tensorrt")
+
+    speech_Qformer = model.speech_Qformer
+    speech_Qformer = torch.compile(speech_Qformer, backend="torch_tensorrt")
+
+    llm = model.llama_model
+    llm = torch.compile(llm, backend="torch_tensorrt")
+    # cache engine을 사용해 여러번 반복되는 계산을 최적화 (맨 처음엔 속도가 느리지만 두번째 이후엔 빠름)
+    # llm = torch.compile(
+    #     llm,
+    #     backend="tensorrt",
+    #     options={
+    #         "use_python_runtime": True,
+    #         "enabled_precisions": [torch.float16, torch.int8],
+    #         "immutable_weights": False,
+    #         "cache_built_engines": True,
+    #         "reuse_cached_engines": True,
+    #         "engine_cache_dir": "tmp/trt_cache"
+    #     }
+    # )
+
+    model.speech_encoder = speech_encoder
+    model.beats = beats
+    model.speech_Qformer = speech_Qformer
+    model.llama_model = llm
+    
+    return model
+
+def load_aot_models():
+    speech_encoder = torch_tensorrt.load("speech_trt.ep")
+    beats = torch_tensorrt.load("beats_trt.ep")
+    speech_Qformer = torch_tensorrt.load("qformer_trt.ep")
+    llm = torch_tensorrt.load("llm_trt.ep")
+    
+    # cudagraph 활성화
+    torch_tensorrt.runtime.set_cudagraph_enabled(True)
+    
+    return speech_encoder, beats, speech_Qformer, llm
 
 def main():
     args = parse_args()
@@ -88,6 +134,14 @@ def main():
     
     # Set models to eval mode
     salmonn_preprocessor.eval()
+    if cfg.config.run.jit_mode:
+        salmonn_preprocessor = set_tensorrt(salmonn_preprocessor)
+    else:
+        speech_encoder, beats, speech_Qformer, llm = load_aot_models()
+        salmonn_preprocessor.speech_encoder = speech_encoder
+        salmonn_preprocessor.beats = beats
+        salmonn_preprocessor.speech_Qformer = speech_Qformer
+        salmonn_preprocessor.llama_model = llm
     
     # Load data
     dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
