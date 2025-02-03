@@ -3,21 +3,57 @@ import json
 import torchaudio
 import torch
 import librosa
+import argparse
+import yaml
+import numpy as np
+import logging
 
-def load_audio(file_path, target_sr=16000):
+####################################
+# 0. Logging 설정 (필요 시)
+####################################
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+####################################
+# 1. Argparse + YAML 설정
+####################################
+def parse_args():
+    parser = argparse.ArgumentParser(description="ASR Preprocessing")
+    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
+    parser.add_argument("--audio-list", type=str, default=None, help="Path to text file containing audio paths (one per line)")
+    parser.add_argument("--output-dir", type=str, default=None, help="Where to save extracted features (optional)")
+    return parser.parse_args()
+
+def load_yaml_config(config_path):
+    with open(config_path, "r") as f:
+        cfg = yaml.safe_load(f)
+    return cfg
+
+####################################
+# 2. 공통 함수들
+####################################
+def load_audio(file_path, target_sr=16000, device="cpu"):
+    if not os.path.exists(file_path):
+        logger.warning(f"Audio file not found: {file_path}")
+        return None, 0
 
     waveform, sr = torchaudio.load(file_path)
     
-    # 리샘플링
+    # Resample
     if sr != target_sr:
         resampler = torchaudio.transforms.Resample(sr, target_sr)
         waveform = resampler(waveform)
         sr = target_sr
     
-    # (채널, time) -> 모노로 합치기
+    # Mono
     if waveform.shape[0] > 1:
         waveform = torch.mean(waveform, dim=0, keepdim=True)
     
+    # Optional GPU
+    waveform = waveform.to(device)
     return waveform, sr
 
 def normalize_waveform(waveform, max_peak=0.9):
@@ -28,77 +64,80 @@ def normalize_waveform(waveform, max_peak=0.9):
     return waveform
 
 def remove_silence(waveform, sr, top_db=25):
-    # librosa.effects.split()은 numpy array를 필요로 함
-    waveform_np = waveform.squeeze().numpy()
-    intervals = librosa.effects.split(y=waveform_np, top_db=top_db)
+    # librosa.effects.split() needs CPU & numpy
+    # -> waveform back to CPU & float
+    wave_cpu = waveform.squeeze().cpu().float().numpy()
+    intervals = librosa.effects.split(y=wave_cpu, top_db=top_db)
 
-    trimmed = []
+    if len(intervals) == 0:
+        # all silent
+        return torch.zeros(0, device=waveform.device)
+    
+    trimmed_segments = []
     for start, end in intervals:
-        trimmed.append(waveform_np[start:end])
+        trimmed_segments.append(wave_cpu[start:end])
     
-    if len(trimmed) == 0:
-        # 전부 무음이면 빈 텐서 반환
-        return torch.zeros(0)
-    
-    trimmed_waveform_np = np.concatenate(trimmed)
-    trimmed_waveform = torch.from_numpy(trimmed_waveform_np).unsqueeze(0)
-    return trimmed_waveform
+    trimmed_np = np.concatenate(trimmed_segments)
+    trimmed_tensor = torch.from_numpy(trimmed_np).unsqueeze(0).to(waveform.device)
+    return trimmed_tensor
 
 def pad_or_trim(waveform, max_length):
-    """
-    - 최대 길이 초과 시 자르고, 부족하면 패딩
-    - ASR 학습 시 10~20초 이상 오디오가 길면 batch 지연이 커짐
-      -> latency를 위해 일정 길이 제한 권장
-    """
     length = waveform.shape[-1]
     if length > max_length:
         waveform = waveform[..., :max_length]
-    elif length < max_length:
+    else:
         pad_size = max_length - length
         waveform = torch.nn.functional.pad(waveform, (0, pad_size))
     return waveform
 
-def extract_features_mfcc(waveform, sr=16000, n_mfcc=13):
-    """
-    - CPU에서 하는 간단 MFCC 추출 예시
-    - 실제로는 MelSpectrogram -> dct 변환 등 내부적으로 torch script 가능
-    """
+def extract_features_mfcc(waveform, sr=16000, n_mfcc=13, device="cpu"):
+    # move transform to same device
     mfcc_transform = torchaudio.transforms.MFCC(
         sample_rate=sr,
         n_mfcc=n_mfcc,
         melkwargs={"n_fft":400, "hop_length":160, "n_mels":23}
-    )
+    ).to(device)
+
     mfcc = mfcc_transform(waveform)
     return mfcc  # shape: [channel, n_mfcc, time]
 
+####################################
+# 3. LightASRPreprocessor 모듈
+####################################
 class LightASRPreprocessor(torch.nn.Module):
     """
-    - GigaSpeech, LibriSpeech를 위한 경량화 전처리 모듈
-    - TorchScript 호환 가능하도록 Module 상속.
+    - GigaSpeech, LibriSpeech 등을 위한 경량화 전처리 모듈
+    - TorchScript 호환 (dynamic file IO 주의)
     """
-    def __init__(self, config):
+    def __init__(self, config, device='cpu'):
         super(LightASRPreprocessor, self).__init__()
+        self.device = device
         self.sample_rate = config.get("sample_rate", 16000)
-        self.max_length = config.get("max_length", 16000 * 15)  # 15초 제한
+        self.max_length = config.get("max_length", 16000 * 15)  # default 15s
         self.apply_vad = config.get("apply_vad", False)
         self.top_db = config.get("vad_top_db", 25)
         self.extract_feature = config.get("extract_feature", True)
         self.n_mfcc = config.get("n_mfcc", 13)
         self.return_waveform = config.get("return_waveform", False)
+        self.vad_min_sec = config.get("vad_min_sec", 3.0)  # optional: only apply VAD if > 3s
 
     def forward(self, file_path: str) -> torch.Tensor:
         """
-        - 파일 경로 입력 -> 전처리 -> (MFCC) 피처 텐서 반환
-        - TorchScript 컴파일 가능 (단, dynamic file IO는 조금 주의 필요)
+        - file_path -> 전처리 -> (MFCC) 텐서 or waveform 반환
         """
-        waveform, sr = load_audio(file_path, self.sample_rate)
-        
-        # 무음 제거 (긴 세그먼트일 때만?)
+        waveform, sr = load_audio(file_path, self.sample_rate, device=self.device)
+        if waveform is None or waveform.numel() == 0:
+            # failed or empty
+            return torch.zeros(0, device=self.device)
+
+        # (옵션) VAD
         if self.apply_vad:
-            waveform = remove_silence(waveform, sr, self.top_db)
-            if waveform.shape[-1] == 0:
-                # 무음만 있으면 빈 텐서 반환
-                return torch.zeros(0)
+            duration_sec = waveform.shape[-1] / sr
+            # "긴 세그먼트" 기준 예시
+            if duration_sec > self.vad_min_sec:
+                waveform = remove_silence(waveform, sr, self.top_db)
+                if waveform.shape[-1] == 0:
+                    return torch.zeros(0, device=self.device)
 
         # 정규화
         waveform = normalize_waveform(waveform, max_peak=0.9)
@@ -106,37 +145,79 @@ class LightASRPreprocessor(torch.nn.Module):
         # 길이 제한
         waveform = pad_or_trim(waveform, self.max_length)
 
-        # 특징 추출
-        if self.extract_feature:
-            features = extract_features_mfcc(waveform, sr, self.n_mfcc)
+        # MFCC or 원본
+        if self.extract_feature and not self.return_waveform:
+            features = extract_features_mfcc(waveform, sr, self.n_mfcc, device=self.device)
             return features  # shape: [1, n_mfcc, T]
         else:
+            # waveform 반환
             return waveform
 
-if __name__ == "__main__":
-    import numpy as np
+####################################
+# 4. main() 함수
+####################################
+def main():
+    args = parse_args()
+    config = load_yaml_config(args.config)
+    logger.info(f"Loaded config from {args.config}: {config}")
 
-    config = {
-        "sample_rate": 16000,
-        "max_length": 16000 * 15,  # 15초
-        "apply_vad": True,
-        "vad_top_db": 25,
-        "extract_feature": True,
-        "n_mfcc": 13,
-        "return_waveform": False
-    }
+    # device 설정 (CPU or GPU)
+    device_str = config.get("device", "cpu")
+    if device_str == "cuda" and not torch.cuda.is_available():
+        logger.warning("Requested CUDA but not available. Falling back to CPU.")
+        device_str = "cpu"
+    device = torch.device(device_str)
 
-    preprocessor = LightASRPreprocessor(config)
-    
-    # TorchScript로 컴파일
+    # 전처리 객체 생성
+    preprocessor = LightASRPreprocessor(config, device=device)
+    logger.info("Initialized LightASRPreprocessor")
+
+    # 파일 목록 불러오기
+    #  1) config에 "audio_files" key가 있다면 그걸로 사용
+    #  2) 또는 args.audio_list 로 텍스트파일 읽기
+    file_list = []
+    if "audio_files" in config:
+        file_list = config["audio_files"]
+        if not isinstance(file_list, list):
+            logger.error("audio_files in config must be a list!")
+            file_list = []
+    elif args.audio_list is not None:
+        if os.path.exists(args.audio_list):
+            with open(args.audio_list, "r") as f:
+                file_list = [line.strip() for line in f if line.strip()]
+        else:
+            logger.error(f"audio-list file not found: {args.audio_list}")
+    else:
+        # fallback -> single 'sample.wav'
+        logger.warning("No audio list provided. Using default sample.wav.")
+        file_list = ["sample.wav"]
+
+    # 출력 디렉토리
+    output_dir = args.output_dir if args.output_dir else config.get("output_dir", "./asr_outputs")
+    os.makedirs(output_dir, exist_ok=True)
+
+    logger.info(f"Processing {len(file_list)} files. Output dir={output_dir}")
+
+    # 전처리 수행
+    for idx, file_path in enumerate(file_list):
+        with torch.no_grad():
+            result = preprocessor(file_path)
+        # shape 보고 저장(예시)
+        if result.numel() == 0:
+            logger.info(f"[{idx+1}/{len(file_list)}] {file_path} -> Empty result (possibly silent).")
+            continue
+
+        # 예시: 텐서를 .pt로 저장
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        save_path = os.path.join(output_dir, base_name + ".pt")
+        torch.save(result.cpu(), save_path)
+        logger.info(f"[{idx+1}/{len(file_list)}] Saved processed features: {save_path}")
+
+    # TorchScript로 변환 & 저장 (옵션)
     scripted_preprocessor = torch.jit.script(preprocessor)
+    script_path = os.path.join(output_dir, "light_asr_preprocessor.pt")
+    scripted_preprocessor.save(script_path)
+    logger.info(f"Saved TorchScript module to {script_path}")
 
-    test_file = "/path/to/Librispeech/sample-0001.flac"
-
-    with torch.no_grad():
-        # 전처리 수행 (CPU)
-        mfcc = scripted_preprocessor(test_file)
-        print("MFCC shape:", mfcc.shape)
-    
-    # mfcc 텐서를 바로 모델(Salmonn) 입력으로 사용하거나,
-    # disk에 저장해서 추후 GPU 추론 시 메모리 절약 가능.
+if __name__ == "__main__":
+    main()

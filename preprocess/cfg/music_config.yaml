@@ -1,0 +1,23 @@
+# music_config.yaml
+
+# nnAudio 기반 변환 설정
+sample_rate: 22050
+transform_type: "mel"  # "stft", "mel", "cqt"
+n_fft: 1024
+hop_length: 512
+n_mels: 128
+fmin: 50.0
+fmax: 8000.0
+bins_per_octave: 12
+
+# 기타 옵션
+trainable_stft: false
+trainable_mel: false
+trainable_cqt: false
+
+# 파일 경로, 출력 설정
+musicnet_root: "/data/dataset/MusicNet"
+output_dir: "./music_features"
+
+logging:
+  level: INFO

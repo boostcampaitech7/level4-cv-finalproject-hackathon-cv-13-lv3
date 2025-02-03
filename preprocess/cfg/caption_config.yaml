@@ -1,0 +1,23 @@
+# caption_config.yaml
+root_dir: "/data/dataset"
+target_sr: 16000
+max_length: 480000  # 30초
+apply_vad: false
+vad_top_db: 20
+normalize: true
+min_length: 1600
+clean_text: true
+
+accent_classify: true   # 억양 분류
+filter_nonus: false     # non-US 필터링
+tts_augment: true       # TTS 증강
+
+# 로그
+logging:
+  level: INFO
+  save_dir: "./logs/caption"
+
+# WavCaps, Clotho 등 데이터셋 경로 설정
+datasets:
+  - WavCaps
+  - Clotho

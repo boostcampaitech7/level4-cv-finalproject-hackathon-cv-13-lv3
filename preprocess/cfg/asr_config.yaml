@@ -1,0 +1,24 @@
+# asr_config.yaml
+sample_rate: 16000
+max_length: 240000    # 240000 samples = 15초
+apply_vad: true
+vad_top_db: 25
+extract_feature: true
+n_mfcc: 13
+return_waveform: false
+
+# 추가 예시 설정
+dataset_paths:
+  # GigaSpeech, LibriSpeech 등의 실제 오디오 위치/메타정보
+  gigaspeech_root: "/data/dataset/GigaSpeech"
+  librispeech_root: "/data/dataset/LibriSpeech"
+
+# 로그/출력 관련
+logging:
+  level: INFO
+  save_dir: "./logs/asr"
+
+# 기타 파라미터 (accents, TTS 등은 필요치 않다면 비활성)
+accent_classify: false
+filter_nonus: false
+tts_augment: false
