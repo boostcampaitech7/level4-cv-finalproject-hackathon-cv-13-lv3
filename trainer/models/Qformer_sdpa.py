@@ -81,7 +81,7 @@ class BertEmbeddings(nn.Module):
         self,
         input_ids=None,
         position_ids=None,
-        query_embeds=None,
+        inputs_embeds=None,
         past_key_values_length=0,
     ):
         if input_ids is not None:
@@ -100,10 +100,10 @@ class BertEmbeddings(nn.Module):
                 position_embeddings = self.position_embeddings(position_ids)
                 embeddings = embeddings + position_embeddings
 
-            if query_embeds is not None:
-                embeddings = torch.cat((query_embeds, embeddings), dim=1)
+            if inputs_embeds is not None:
+                embeddings = torch.cat((inputs_embeds, embeddings), dim=1)
         else:
-            embeddings = query_embeds
+            embeddings = inputs_embeds
 
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
@@ -901,7 +901,7 @@ class BertModel(BertPreTrainedModel):
         attention_mask=None,
         position_ids=None,
         head_mask=None,
-        query_embeds=None,
+        inputs_embeds=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         past_key_values=None,
@@ -947,8 +947,8 @@ class BertModel(BertPreTrainedModel):
 
         if input_ids is None:
             assert (
-                query_embeds is not None
-            ), "You have to specify query_embeds when input_ids is None"
+                inputs_embeds is not None
+            ), "You have to specify inputs_embeds when input_ids is None"
 
         # past_key_values_length
         past_key_values_length = (
@@ -957,12 +957,12 @@ class BertModel(BertPreTrainedModel):
             else 0
         )
 
-        query_length = query_embeds.shape[1] if query_embeds is not None else 0
+        query_length = inputs_embeds.shape[1] if inputs_embeds is not None else 0
 
         embedding_output = self.embeddings(
             input_ids=input_ids,
             position_ids=position_ids,
-            query_embeds=query_embeds,
+            inputs_embeds=inputs_embeds,
             past_key_values_length=past_key_values_length,
         )
 
@@ -983,7 +983,7 @@ class BertModel(BertPreTrainedModel):
                 input_ids.shape,
                 device,
                 is_decoder,
-                has_query=(query_embeds is not None),
+                has_query=(inputs_embeds is not None),
             )
         else:
             extended_attention_mask = self.get_extended_attention_mask(
@@ -1084,7 +1084,7 @@ class BertLMHeadModel(BertPreTrainedModel):
         attention_mask=None,
         position_ids=None,
         head_mask=None,
-        query_embeds=None,
+        inputs_embeds=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         labels=None,
@@ -1135,14 +1135,14 @@ class BertLMHeadModel(BertPreTrainedModel):
         if labels is not None:
             use_cache = False
         if past_key_values is not None:
-            query_embeds = None
+            inputs_embeds = None
 
         outputs = self.bert(
             input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
             head_mask=head_mask,
-            query_embeds=query_embeds,
+            inputs_embeds=inputs_embeds,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
             past_key_values=past_key_values,
@@ -1154,8 +1154,8 @@ class BertLMHeadModel(BertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
-        if query_embeds is not None:
-            sequence_output = outputs[0][:, query_embeds.shape[1] :, :]
+        if inputs_embeds is not None:
+            sequence_output = outputs[0][:, inputs_embeds.shape[1] :, :]
 
         prediction_scores = self.cls(sequence_output)
 
@@ -1189,12 +1189,12 @@ class BertLMHeadModel(BertPreTrainedModel):
         )
 
     def prepare_inputs_for_generation(
-        self, input_ids, query_embeds, past=None, attention_mask=None, **model_kwargs
+        self, input_ids, inputs_embeds, past=None, attention_mask=None, **model_kwargs
     ):
         # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
         if attention_mask is None:
             attention_mask = input_ids.new_ones(input_ids.shape)
-        query_mask = input_ids.new_ones(query_embeds.shape[:-1])
+        query_mask = input_ids.new_ones(inputs_embeds.shape[:-1])
         attention_mask = torch.cat([query_mask, attention_mask], dim=-1)
 
         # cut decoder_input_ids if past is used
@@ -1203,7 +1203,7 @@ class BertLMHeadModel(BertPreTrainedModel):
 
         return {
             "input_ids": input_ids,
-            "query_embeds": query_embeds,
+            "inputs_embeds": inputs_embeds,
             "attention_mask": attention_mask,
             "past_key_values": past,
             "encoder_hidden_states": model_kwargs.get("encoder_hidden_states", None),

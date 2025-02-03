@@ -80,7 +80,7 @@ class BertEmbeddings(nn.Module):
         self,
         input_ids=None,
         position_ids=None,
-        query_embeds=None,
+        inputs_embeds=None,
         past_key_values_length=0,
     ):
         if input_ids is not None:
@@ -99,10 +99,10 @@ class BertEmbeddings(nn.Module):
                 position_embeddings = self.position_embeddings(position_ids)
                 embeddings = embeddings + position_embeddings
 
-            if query_embeds is not None:
-                embeddings = torch.cat((query_embeds, embeddings), dim=1)
+            if inputs_embeds is not None:
+                embeddings = torch.cat((inputs_embeds, embeddings), dim=1)
         else:
-            embeddings = query_embeds
+            embeddings = inputs_embeds
 
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
@@ -182,7 +182,6 @@ class BertSelfAttention(nn.Module):
         # and values come from an encoder; the attention mask needs to be
         # such that the encoder's padding tokens are not attended to.
         is_cross_attention = encoder_hidden_states is not None
-
         if is_cross_attention:
             key_layer = self.transpose_for_scores(self.key(encoder_hidden_states))
             value_layer = self.transpose_for_scores(self.value(encoder_hidden_states))
@@ -201,7 +200,7 @@ class BertSelfAttention(nn.Module):
         query_layer = self.transpose_for_scores(mixed_query_layer)
 
         past_key_value = (key_layer, value_layer)
-
+        
         # Take the dot product between "query" and "key" to get the raw attention scores.
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
 
@@ -388,9 +387,7 @@ class BertLayer(nn.Module):
             self.config.add_cross_attention
             and layer_num % self.config.cross_attention_freq == 0
         ):
-            self.crossattention = BertAttention(
-                config, is_cross_attention=self.config.add_cross_attention
-            )
+            self.crossattention = BertAttention(config, is_cross_attention=self.config.add_cross_attention)
             self.has_cross_attention = True
         else:
             self.has_cross_attention = False
@@ -435,11 +432,12 @@ class BertLayer(nn.Module):
                     encoder_hidden_states is not None
                 ), "encoder_hidden_states must be given for cross-attention layers"
                 cross_attention_outputs = self.crossattention(
-                    query_attention_output,
-                    attention_mask,
-                    head_mask,
-                    encoder_hidden_states,
-                    encoder_attention_mask,
+                    hidden_states=query_attention_output,
+                    attention_mask=attention_mask,
+                    head_mask=head_mask,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
+                    past_key_value=None,
                     output_attentions=output_attentions,
                 )
                 query_attention_output = cross_attention_outputs[0]
@@ -447,12 +445,8 @@ class BertLayer(nn.Module):
                     outputs + cross_attention_outputs[1:-1]
                 )  # add cross attentions if we output attention weights
 
-            layer_output = apply_chunking_to_forward(
-                self.feed_forward_chunk_query,
-                self.chunk_size_feed_forward,
-                self.seq_len_dim,
-                query_attention_output,
-            )
+            layer_output = self.feed_forward_chunk_query(query_attention_output)
+            
             if attention_output.shape[1] > query_length:
                 layer_output_text = apply_chunking_to_forward(
                     self.feed_forward_chunk,
@@ -475,6 +469,7 @@ class BertLayer(nn.Module):
         return outputs
 
     def feed_forward_chunk(self, attention_output):
+        print("feedfowardchunk\nfeedfowardchunk\nfeedfowardchunk\nfeedfowardchunk\nfeedfowardchunk")
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
         return layer_output
@@ -808,7 +803,7 @@ class BertModel(BertPreTrainedModel):
         attention_mask=None,
         position_ids=None,
         head_mask=None,
-        query_embeds=None,
+        inputs_embeds=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         past_key_values=None,
@@ -854,8 +849,8 @@ class BertModel(BertPreTrainedModel):
 
         if input_ids is None:
             assert (
-                query_embeds is not None
-            ), "You have to specify query_embeds when input_ids is None"
+                inputs_embeds is not None
+            ), "You have to specify inputs_embeds when input_ids is None"
 
         # past_key_values_length
         past_key_values_length = (
@@ -864,12 +859,12 @@ class BertModel(BertPreTrainedModel):
             else 0
         )
 
-        query_length = query_embeds.shape[1] if query_embeds is not None else 0
+        query_length = inputs_embeds.shape[1] if inputs_embeds is not None else 0
 
         embedding_output = self.embeddings(
             input_ids=input_ids,
             position_ids=position_ids,
-            query_embeds=query_embeds,
+            inputs_embeds=inputs_embeds,
             past_key_values_length=past_key_values_length,
         )
 
@@ -890,7 +885,7 @@ class BertModel(BertPreTrainedModel):
                 input_ids.shape,
                 device,
                 is_decoder,
-                has_query=(query_embeds is not None),
+                has_query=(inputs_embeds is not None),
             )
         else:
             extended_attention_mask = self.get_extended_attention_mask(
@@ -991,7 +986,7 @@ class BertLMHeadModel(BertPreTrainedModel):
         attention_mask=None,
         position_ids=None,
         head_mask=None,
-        query_embeds=None,
+        inputs_embeds=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         labels=None,
@@ -1042,14 +1037,14 @@ class BertLMHeadModel(BertPreTrainedModel):
         if labels is not None:
             use_cache = False
         if past_key_values is not None:
-            query_embeds = None
+            inputs_embeds = None
 
         outputs = self.bert(
             input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
             head_mask=head_mask,
-            query_embeds=query_embeds,
+            inputs_embeds=inputs_embeds,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
             past_key_values=past_key_values,
@@ -1061,8 +1056,8 @@ class BertLMHeadModel(BertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
-        if query_embeds is not None:
-            sequence_output = outputs[0][:, query_embeds.shape[1] :, :]
+        if inputs_embeds is not None:
+            sequence_output = outputs[0][:, inputs_embeds.shape[1] :, :]
 
         prediction_scores = self.cls(sequence_output)
 
@@ -1096,12 +1091,12 @@ class BertLMHeadModel(BertPreTrainedModel):
         )
 
     def prepare_inputs_for_generation(
-        self, input_ids, query_embeds, past=None, attention_mask=None, **model_kwargs
+        self, input_ids, inputs_embeds, past=None, attention_mask=None, **model_kwargs
     ):
         # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
         if attention_mask is None:
             attention_mask = input_ids.new_ones(input_ids.shape)
-        query_mask = input_ids.new_ones(query_embeds.shape[:-1])
+        query_mask = input_ids.new_ones(inputs_embeds.shape[:-1])
         attention_mask = torch.cat([query_mask, attention_mask], dim=-1)
 
         # cut decoder_input_ids if past is used
@@ -1110,7 +1105,7 @@ class BertLMHeadModel(BertPreTrainedModel):
 
         return {
             "input_ids": input_ids,
-            "query_embeds": query_embeds,
+            "inputs_embeds": inputs_embeds,
             "attention_mask": attention_mask,
             "past_key_values": past,
             "encoder_hidden_states": model_kwargs.get("encoder_hidden_states", None),
@@ -1127,91 +1122,3 @@ class BertLMHeadModel(BertPreTrainedModel):
                 ),
             )
         return reordered_past
-
-
-class BertForMaskedLM(BertPreTrainedModel):
-
-    _keys_to_ignore_on_load_unexpected = [r"pooler"]
-    _keys_to_ignore_on_load_missing = [r"position_ids", r"predictions.decoder.bias"]
-
-    def __init__(self, config):
-        super().__init__(config)
-
-        self.bert = BertModel(config, add_pooling_layer=False)
-        self.cls = BertOnlyMLMHead(config)
-
-        self.init_weights()
-
-    def get_output_embeddings(self):
-        return self.cls.predictions.decoder
-
-    def set_output_embeddings(self, new_embeddings):
-        self.cls.predictions.decoder = new_embeddings
-
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        position_ids=None,
-        head_mask=None,
-        query_embeds=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        return_logits=False,
-        is_decoder=False,
-    ):
-        r"""
-        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Labels for computing the masked language modeling loss. Indices should be in ``[-100, 0, ...,
-            config.vocab_size]`` (see ``input_ids`` docstring) Tokens with indices set to ``-100`` are ignored
-            (masked), the loss is only computed for the tokens with labels in ``[0, ..., config.vocab_size]``
-        """
-
-        return_dict = (
-            return_dict if return_dict is not None else self.config.use_return_dict
-        )
-
-        outputs = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            query_embeds=query_embeds,
-            encoder_hidden_states=encoder_hidden_states,
-            encoder_attention_mask=encoder_attention_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            is_decoder=is_decoder,
-        )
-
-        if query_embeds is not None:
-            sequence_output = outputs[0][:, query_embeds.shape[1] :, :]
-        prediction_scores = self.cls(sequence_output)
-
-        if return_logits:
-            return prediction_scores
-
-        masked_lm_loss = None
-        if labels is not None:
-            loss_fct = CrossEntropyLoss()  # -100 index = padding token
-            masked_lm_loss = loss_fct(
-                prediction_scores.view(-1, self.config.vocab_size), labels.view(-1)
-            )
-
-        if not return_dict:
-            output = (prediction_scores,) + outputs[2:]
-            return (
-                ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
-            )
-
-        return MaskedLMOutput(
-            loss=masked_lm_loss,
-            logits=prediction_scores,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )

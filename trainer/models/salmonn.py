@@ -18,6 +18,7 @@ import contextlib
 import random
 
 import torch
+# torch._dynamo.config.disable = True  # Dynamo를 완전히 비활성화
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
@@ -32,19 +33,22 @@ from models.ced.audiotransformer import AudioTransformer, CEDConfig
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
-import os
+# import torch._dynamo
+# torch._dynamo.config.suppress_errors = True
 
 class SALMONN(nn.Module):
     @classmethod # static method (cls를 통해 클래스에 접근)
     def init_speech_Qformer(cls, num_query_token, speech_width, num_hidden_layers=2):
-        encoder_config = BertConfig.from_pretrained("bert-base-uncased") # BERT의 기본 설정 로드
+        encoder_config = BertConfig.from_pretrained("bert-base-uncased",
+                                                    low_cpu_mem_usage=True,  # CPU 메모리 사용 최소화
+                                                    torch_dtype="auto")         # 자동 혼합 정밀도) # BERT의 기본 설정 로드
         encoder_config.num_hidden_layers = num_hidden_layers
         encoder_config.encoder_width = speech_width
         # insert cross-attention layer every other block
         encoder_config.add_cross_attention = True
         encoder_config.cross_attention_freq = 1
         encoder_config.query_length = num_query_token
-        Qformer = BertLMHeadModel(config=encoder_config) # BERT 모델 초기화
+        Qformer = BertLMHeadModel(config=encoder_config) # BERT 모델 초기화szw
         # 0으로 초기화된 Query Token 생성
         query_tokens = nn.Parameter(
             torch.zeros(1, num_query_token, encoder_config.hidden_size) 
@@ -135,17 +139,15 @@ class SALMONN(nn.Module):
                     torch_dtype=torch.float16, # FP16 precision
                     load_in_8bit=True, # 8bit Quantzation 사용
                     token=token,
-                    attn_implementation='sdpa',
-                    device_map={"": int(os.environ["RANK"])}
+                    attn_implementation='eager'
                 )
             else:
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
-                    attn_implementation='sdpa',
-                    low_cpu_mem_usage=True,
-                    device_map={"": int(os.environ["RANK"])}
+                    load_in_4bit=True,
+                    attn_implementation='sdpa'
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
@@ -230,6 +232,8 @@ class SALMONN(nn.Module):
                 outputdim=527,
                 target_length=1012,
             )
+            self.Ced.load_state_dict(Ced_ckpt, strict=False)            
+            # self.ln_audio = nn.LayerNorm(self.Ced.embed_dim)
             self.encoder_peft_config = LoraConfig(
                 target_modules=["q_proj", "v_proj"],
                 inference_mode=False,
@@ -237,11 +241,10 @@ class SALMONN(nn.Module):
                 lora_alpha=32,
                 lora_dropout=0.1,
             )
-            self.Ced.load_state_dict(Ced_ckpt, strict=True)
             self.Ced = get_peft_model(self.Ced, self.encoder_peft_config)
             self.ln_audio = nn.LayerNorm(self.Ced.embed_dim)
             self.Ced.print_trainable_parameters()
-            #self.Ced = torch.compile(self.Ced)
+            #self.Ced = torch.compile(self.Ced, mode=torch_compile_mode,dynamic=False, fullgraph=True)
             logging.info('LoRA Training')
 
 
@@ -277,8 +280,7 @@ class SALMONN(nn.Module):
                 self.speech_Qformer.eval()
                 self.speech_query_tokens.requires_grad = False
                 logging.info("freeze Speech QFormer")
-
-
+            
             self.speech_Qformer = torch.compile(self.speech_Qformer, mode=torch_compile_mode,dynamic=False, fullgraph=True)
 
             logging.info('Loading speech LLAMA proj')
@@ -352,7 +354,7 @@ class SALMONN(nn.Module):
 
                 query_tokens = self.speech_query_tokens.expand(speech_embeds.shape[0], -1, -1)
                 query_output = self.speech_Qformer.bert(
-                    query_embeds=query_tokens,
+                    inputs_embeds=query_tokens,
                     encoder_hidden_states=speech_embeds,
                     encoder_attention_mask=speech_atts,
                     return_dict=True,
@@ -375,10 +377,10 @@ class SALMONN(nn.Module):
             if self.beats_path and raw_wav is not None:
                 audio_embeds, _ = self.beats.extract_features(raw_wav, padding_mask=audio_padding_mask, feature_only=True)
             elif self.Ced_path and raw_wav is not None:
-                #print(f"[DEBUG] Before CED - raw_wav.shape: {raw_wav.shape}, audio_padding_mask.shape: {audio_padding_mask.shape}")
-                audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32))
-                #audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32), padding_mask=audio_padding_mask)
-                #print(f"[DEBUG] After CED - audio_embeds.shape: {audio_embeds.shape}")
+                print(f"[DEBUG] Before CED - raw_wav.shape: {raw_wav.shape}, audio_padding_mask.shape: {audio_padding_mask.shape}")
+                #audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32))
+                audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32), padding_mask=audio_padding_mask)
+                print(f"[DEBUG] After CED - audio_embeds.shape: {audio_embeds.shape}")
             else:
                 audio_embeds = None
                         
