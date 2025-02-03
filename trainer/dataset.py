@@ -22,6 +22,8 @@ import numpy as np
 from transformers import WhisperFeatureExtractor
 import librosa
 
+import torchaudio
+
 
 class SALMONNDataset(Dataset):
     def __init__(self, prefix, ann_path, whisper_path):
@@ -32,9 +34,8 @@ class SALMONNDataset(Dataset):
 
         # json 파일 로드
         data = json.load(open(ann_path, "r"))["annotation"]
-        annotation_wo_GigaSpeech = [item for item in data if 'GigaSpeech' not in item['path']]
         
-        self.annotation = annotation_wo_GigaSpeech
+        self.annotation = data
         # Whisper 모델 로드 (특히 음성 데이터를 처리하는 모델)
         self.wav_processor = WhisperFeatureExtractor.from_pretrained(whisper_path)
         
@@ -107,7 +108,9 @@ class SALMONNDataset(Dataset):
         if sr != self.wav_processor.sampling_rate: # TODO. use more efficient implementation            
             # Whisper 모델의 sr에 맞게 샘플링 (librosa.resample = 고품질이지만 느림)
             # scipy.signal.resample = 빠르지만 품질이 떨어짐, 다른 방법으로 교체 가능
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=self.wav_processor.sampling_rate)
+            #audio = librosa.resample(audio, orig_sr=sr, target_sr=self.wav_processor.sampling_rate)
+            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.wav_processor.sampling_rate)
+            audio = resampler(torch.tensor(audio)).numpy()
             sr = self.wav_processor.sampling_rate
 
         # 오디오 데이터 30초로 자르기

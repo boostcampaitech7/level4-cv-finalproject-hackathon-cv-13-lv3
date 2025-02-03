@@ -18,7 +18,6 @@ import contextlib
 import random
 
 import torch
-# torch._dynamo.config.disable = True  # Dynamo를 완전히 비활성화
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
@@ -32,6 +31,8 @@ from .utils import StoppingCriteriaSub
 from models.ced.audiotransformer import AudioTransformer, CEDConfig
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
+
+import os
 
 class SALMONN(nn.Module):
     @classmethod # static method (cls를 통해 클래스에 접근)
@@ -134,12 +135,17 @@ class SALMONN(nn.Module):
                     torch_dtype=torch.float16, # FP16 precision
                     load_in_8bit=True, # 8bit Quantzation 사용
                     token=token,
+                    attn_implementation='sdpa',
+                    device_map={"": int(os.environ["RANK"])}
                 )
             else:
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
+                    attn_implementation='sdpa',
+                    low_cpu_mem_usage=True,
+                    device_map={"": int(os.environ["RANK"])}
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
@@ -224,9 +230,6 @@ class SALMONN(nn.Module):
                 outputdim=527,
                 target_length=1012,
             )
-            self.Ced.load_state_dict(Ced_ckpt, strict=False)
-            
-            self.ln_audio = nn.LayerNorm(self.Ced.embed_dim)
             self.encoder_peft_config = LoraConfig(
                 target_modules=["q_proj", "v_proj"],
                 inference_mode=False,
@@ -234,9 +237,11 @@ class SALMONN(nn.Module):
                 lora_alpha=32,
                 lora_dropout=0.1,
             )
+            self.Ced.load_state_dict(Ced_ckpt, strict=True)
             self.Ced = get_peft_model(self.Ced, self.encoder_peft_config)
+            self.ln_audio = nn.LayerNorm(self.Ced.embed_dim)
             self.Ced.print_trainable_parameters()
-            self.Ced = torch.compile(self.Ced, mode=torch_compile_mode,dynamic=False, fullgraph=True)
+            #self.Ced = torch.compile(self.Ced)
             logging.info('LoRA Training')
 
 
@@ -272,6 +277,9 @@ class SALMONN(nn.Module):
                 self.speech_Qformer.eval()
                 self.speech_query_tokens.requires_grad = False
                 logging.info("freeze Speech QFormer")
+
+
+            self.speech_Qformer = torch.compile(self.speech_Qformer, mode=torch_compile_mode,dynamic=False, fullgraph=True)
 
             logging.info('Loading speech LLAMA proj')
             if only_preprocessor:
@@ -367,7 +375,10 @@ class SALMONN(nn.Module):
             if self.beats_path and raw_wav is not None:
                 audio_embeds, _ = self.beats.extract_features(raw_wav, padding_mask=audio_padding_mask, feature_only=True)
             elif self.Ced_path and raw_wav is not None:
+                #print(f"[DEBUG] Before CED - raw_wav.shape: {raw_wav.shape}, audio_padding_mask.shape: {audio_padding_mask.shape}")
                 audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32))
+                #audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32), padding_mask=audio_padding_mask)
+                #print(f"[DEBUG] After CED - audio_embeds.shape: {audio_embeds.shape}")
             else:
                 audio_embeds = None
                         
@@ -623,6 +634,7 @@ class SALMONN(nn.Module):
         # 훈련된 모델 불러오기
         ckpt_path = config.get("ckpt", "")
         if ckpt_path:
+            print("Load SALMONN ckpt")
             logging.info("Load SALMONN ckpt from: {}".format(ckpt_path))
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
             model.load_state_dict(ckpt['model'], strict=False)

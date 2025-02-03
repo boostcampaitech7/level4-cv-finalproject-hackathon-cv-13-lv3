@@ -120,7 +120,6 @@ def get_optimizer(model, config):
     for n, p in model.named_parameters():
         if not p.requires_grad:
             continue  # frozen weights
-        print(n)
         # weight decay 미적용 파라미터 (bias, ln = layer norm, bn = batch norm)
         if p.ndim < 2 or "bias" in n or "ln" in n or "bn" in n:
             p_non_wd.append(p)

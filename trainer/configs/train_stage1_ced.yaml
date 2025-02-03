@@ -11,19 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-project_name : 'Salmonn_stage2'
+project_name : 'Salmonn'
 model:
   torch_compile_mode: "max-autotune"
   liger_kernel: False
   # paths
   llama_path: "meta-llama/Llama-3.2-3B-Instruct"
-  whisper_path: "openai/whisper-large-v3-turbo"
-  beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
-  #Ced_path:  "/data/dataset/pretrained/audiotransformer_base_mAP_4999.pt"
+  whisper_path: "openai/whisper-large-v3-turbo" #"openai/whisper-large-v2"
+  beats_path: "" #"/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
+  Ced_path:  "/data/dataset/pretrained/audiotransformer_base_mAP_4999.pt"
 
-  token: ""  # Use hf token to access gated repositories
+  token: ""
 
-  ckpt: "/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-whisper-large-v3-turbo-5epoch/checkpoint_best.pth" # you may put stage1 checkpoint .pth path in here
+  ckpt: "" #"model ckpt" # if not "", load model from ckpt for training or evaluation
 
   freeze_whisper: True
   freeze_beats: True
@@ -50,32 +50,32 @@ model:
   prompt_path: "prompts/train_prompt.json"
   test_prompt_path: "prompts/test_prompt.json"
   max_txt_len: 300
-  end_sym: "<|end_of_text|>" #"</s>"
+  end_sym: "<|end_of_text|>"   # TODO: change eos token
 
 datasets:
   prefix: "/data/dataset"
   
-  train_ann_path: "/data/dataset/stage2_train_99.json"
-  valid_ann_path: "/data/dataset/stage2_valid_01.json"
+  train_ann_path: "/data/dataset/stage1_train_99.json"
+  valid_ann_path: "/data/dataset/stage1_valid_01.json"
   test_ann_path: "/data/dataset/test_aac.json"
 
-  whisper_path: "openai/whisper-large-v3-turbo"
+  whisper_path: "openai/whisper-large-v3-turbo" # "openai/whisper-large-v2"
 
 run:
   # log & settings
   seed: 42
-  output_dir: "outputs_stage2"
+  output_dir: "outputs_stage1_only"
   evaluate: False # if True, only evaluate model on test data
-  exp_name: "llama-3.2-3B-whisperv3turbo-beats-stage2"
+  exp_name: "llama-3.2-3B_whisper_v3_Audio_Encoder_Ced"
 
   log_freq: 5
-  log_level_warning: True
+  log_level_warning: True # log level이 Info면 모델의 layer도 전부 출력
   epoch_based: False
   iters_per_epoch: 3000
   accum_grad_iters: 1
   batch_size_train: 8
   batch_size_eval: 16
-  num_workers: 8
+  num_workers: 16
 
   device: "cuda"
   use_distributed: True
