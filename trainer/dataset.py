@@ -26,15 +26,10 @@ import librosa
 class SALMONNDataset(Dataset):
     def __init__(self, prefix, ann_path, whisper_path):
         super().__init__()
-        
         # 데이터 경로 설정
         self.prefix = prefix
-
         # json 파일 로드
-        data = json.load(open(ann_path, "r"))["annotation"]
-        annotation_wo_GigaSpeech = [item for item in data if 'GigaSpeech' not in item['path']]
-        
-        self.annotation = annotation_wo_GigaSpeech
+        self.annotation = json.load(open(ann_path, "r"))["annotation"]
         # Whisper 모델 로드 (특히 음성 데이터를 처리하는 모델)
         self.wav_processor = WhisperFeatureExtractor.from_pretrained(whisper_path)
         

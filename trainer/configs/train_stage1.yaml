@@ -14,7 +14,7 @@
 project_name : 'Salmonn'
 model:
   torch_compile_mode: "max-autotune"
-  liger_kernel: True
+  liger_kernel: False
   # paths
   llama_path: "meta-llama/Llama-3.2-3B-Instruct"
   whisper_path: "openai/whisper-large-v3" #"openai/whisper-large-v2"
@@ -92,7 +92,7 @@ run:
     weight_decay: 0.05
     beta2: 0.999
 
-    use_apollo: True
+    use_apollo: False
     rank: 1
     scale_type: 'tensor'
     scale: 128

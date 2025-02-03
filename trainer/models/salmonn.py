@@ -135,7 +135,7 @@ class SALMONN(nn.Module):
                     load_in_8bit=True, # 8bit Quantzation 사용
                     token=token,
                     low_cpu_mem_usage=True,                    
-                    device_map={"": int(os.environ["RANK"])}
+                    device_map={"": os.environ.get("RANK", 0)}
                 )
             else:
                 self.llama_model = CausalLMWrapper.from_pretrained(
@@ -143,7 +143,7 @@ class SALMONN(nn.Module):
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
                     low_cpu_mem_usage=True,                    
-                    device_map={"": int(os.environ["RANK"])}
+                    device_map={"": os.environ.get("RANK", 0)}
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
