@@ -19,7 +19,8 @@ import torch
 from torch import Tensor, device, dtype, nn
 import torch.utils.checkpoint
 from torch import nn
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, nn
+import yaml
 import torch.nn.functional as F
 
 from transformers.activations import ACT2FN
@@ -387,13 +388,14 @@ def gather_tokens_by_index(tensor, indices):
     return pruned
 
 class BertLayer(nn.Module):
-    def __init__(self, config, layer_num):
+    def __init__(self, config, layer_num, use_token_pruning=True, keep_rate=0.7):
         super().__init__()
         self.config = config
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
         self.attention = BertAttention(config)
         self.layer_num = layer_num
+
         if (
             self.config.add_cross_attention
             and layer_num % self.config.cross_attention_freq == 0
@@ -404,13 +406,16 @@ class BertLayer(nn.Module):
             self.has_cross_attention = True
         else:
             self.has_cross_attention = False
+
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
         self.intermediate_query = BertIntermediate(config)
         self.output_query = BertOutput(config)
         
-        self.keep_rate = 0.7      
+        # 토큰 프루닝 관련 설정
+        self.use_token_pruning = use_token_pruning
+        self.keep_rate = keep_rate  
 
     def forward(
         self,
@@ -423,7 +428,7 @@ class BertLayer(nn.Module):
         output_attentions=False,
         query_length=0,
     ):
-        # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
+        # decoder의 경우, 캐시된 key/value가 앞쪽에 있을 수 있으므로 분리
         self_attn_past_key_value = (
             past_key_value[:2] if past_key_value is not None else None
         )
@@ -434,9 +439,9 @@ class BertLayer(nn.Module):
             output_attentions=True,
             past_key_value=self_attn_past_key_value,
         )
-        attention_output = self_attention_outputs[0]  
-        attention_probs = self_attention_outputs[1]  
-        present_key_value = self_attention_outputs[-1]  
+        attention_output = self_attention_outputs[0]
+        attention_probs = self_attention_outputs[1]
+        present_key_value = self_attention_outputs[-1]
 
         outputs = self_attention_outputs[1:-1]
 
@@ -477,22 +482,31 @@ class BertLayer(nn.Module):
                 layer_output = layer_output_query
 
         else:
-            B, N, _ = attention_output.shape
-            K = int(N * self.keep_rate)
+            # query_length가 0인 경우: 토큰 프루닝 on/off 옵션에 따라 분기
+            if self.use_token_pruning and self.keep_rate < 1.0:
+                B, N, _ = attention_output.shape
+                K = int(N * self.keep_rate)
 
-            token_importance = attention_probs.sum(dim=1).sum(dim=1)
+                token_importance = attention_probs.sum(dim=1).sum(dim=1)
+                _, topk_indices = torch.topk(token_importance, K, dim=1)
 
-            _, topk_indices = torch.topk(token_importance, K, dim=1) 
+                pruned_attention_output = gather_tokens_by_index(attention_output, topk_indices)
+                pruned_hidden_states = gather_tokens_by_index(hidden_states, topk_indices)
 
-            pruned_attention_output = gather_tokens_by_index(attention_output, topk_indices)
-            pruned_hidden_states = gather_tokens_by_index(hidden_states, topk_indices)
-
-            layer_output = apply_chunking_to_forward(
-                self.feed_forward_chunk,
-                self.chunk_size_feed_forward,
-                self.seq_len_dim,
-                pruned_attention_output,
-            )
+                layer_output = apply_chunking_to_forward(
+                    self.feed_forward_chunk,
+                    self.chunk_size_feed_forward,
+                    self.seq_len_dim,
+                    pruned_attention_output,
+                )
+            else:
+                # 토큰 프루닝 비활성화인 경우 전체 토큰을 사용
+                layer_output = apply_chunking_to_forward(
+                    self.feed_forward_chunk,
+                    self.chunk_size_feed_forward,
+                    self.seq_len_dim,
+                    attention_output,
+                )
 
         outputs = (layer_output,) + outputs
         outputs = outputs + (present_key_value,)
@@ -500,13 +514,13 @@ class BertLayer(nn.Module):
         return outputs
 
     def feed_forward_chunk(self, attention_output):
-        # feed-forward chunk (기본 BERT 논문 구조)
+        # 기본 feed-forward 구조 (BERT 논문 기준)
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
         return layer_output
 
     def feed_forward_chunk_query(self, attention_output):
-        # query 토큰 전용 feed-forward (Q-former 등에서 사용)
+        # Q-former 등 query 전용 feed-forward
         intermediate_output = self.intermediate_query(attention_output)
         layer_output = self.output_query(intermediate_output, attention_output)
         return layer_output

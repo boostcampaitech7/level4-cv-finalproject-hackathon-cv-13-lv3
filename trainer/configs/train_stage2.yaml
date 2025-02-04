@@ -49,6 +49,9 @@ model:
   max_txt_len: 300
   end_sym: "</s>"
 
+  use_token_pruning: False  # True면 토큰 프루닝 적용, False면 비활성화
+  token_keep_rate: 0.7  # 유지할 토큰 비율 (1.0이면 프루닝 없음)
+  
 datasets:
   prefix: "/root/base_data/audios_salmonn_1%_sampled"
   

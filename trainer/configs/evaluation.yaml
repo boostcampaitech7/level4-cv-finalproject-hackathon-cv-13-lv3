@@ -50,6 +50,9 @@ model:
   max_txt_len: 300
   end_sym: "<|end_of_text|>"
 
+  use_token_pruning: False  # True면 토큰 프루닝 적용, False면 비활성화
+  token_keep_rate: 0.7  # 유지할 토큰 비율 (1.0이면 프루닝 없음)
+  
 generate:
   max_new_tokens: 200
   num_beams: 4
