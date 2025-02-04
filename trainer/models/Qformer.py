@@ -412,8 +412,8 @@ class BertLayer(nn.Module):
 
         self.intermediate_query = BertIntermediate(config)
         self.output_query = BertOutput(config)
-        
-        # 토큰 프루닝 관련 설정
+
+        # YAML에서 설정한 토큰 프루닝 옵션 반영
         self.use_token_pruning = use_token_pruning
         self.keep_rate = keep_rate  
 
@@ -524,7 +524,18 @@ class BertLayer(nn.Module):
         intermediate_output = self.intermediate_query(attention_output)
         layer_output = self.output_query(intermediate_output, attention_output)
         return layer_output
+    
+def load_config(yaml_path="/data/bh/trainer/configs/train_stage1.yaml"):
+    with open(yaml_path, "r") as f:
+        config = yaml.safe_load(f)
+    return config
 
+config = load_config() 
+
+use_token_pruning = config["model"].get("use_token_pruning", True)
+token_keep_rate = config["model"].get("token_keep_rate", 0.7)
+
+bert_layer = BertLayer(config, layer_num=0, use_token_pruning=use_token_pruning, keep_rate=token_keep_rate)
 
 class BertEncoder(nn.Module):
     def __init__(self, config):
@@ -1106,7 +1117,17 @@ class BertLMHeadModel(BertPreTrainedModel):
             sequence_output = outputs[0][:, query_embeds.shape[1] :, :]
 
         prediction_scores = self.cls(sequence_output)
+            cross_attentions=outputs.cross_attentions,
+        )
 
+    def prepare_inputs_for_generation(
+        self, input_ids, query_embeds, past=None, attention_mask=None, **model_kwargs
+    ):
+        # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
+        if attention_mask is None:
+            attention_mask = input_ids.new_ones(input_ids.shape)
+        query_mask = input_ids.new_ones(query_embeds.shape[:-1])
+        attention_mask = torch.cat([query_mask, attention_
         if return_logits:
             return prediction_scores[:, :-1, :].contiguous()
 
