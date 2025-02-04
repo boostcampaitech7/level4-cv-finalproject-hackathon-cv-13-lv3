@@ -5,7 +5,7 @@
 SALMONNDataset을 이용하여 오디오 파일을 읽고, Whisper를 통한 spectrogram과 함께
 CLAP 임베딩을 미리 추출하여 .pt 파일로 저장함.
 
-사용법: python preprocess_clap.py --prefix "/data/dataset" --ann_path "/data/dataset/annotation.json" --whisper_path "openai/whisper-tiny" --output_dir "/data/dataset/preprocessed_clap"
+사용법: python clap.py --prefix "/data/dataset" --ann_path "/data/dataset/annotation.json" --whisper_path "openai/whisper-tiny" --output_dir "/data/dataset/preprocessed_clap"
 """
 
 import os
