@@ -31,6 +31,8 @@ from .utils import StoppingCriteriaSub
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
 
+import os
+
 class SALMONN(nn.Module):
     @classmethod # static method (cls를 통해 클래스에 접근)
     def init_speech_Qformer(cls, num_query_token, speech_width, num_hidden_layers=2):
@@ -130,12 +132,18 @@ class SALMONN(nn.Module):
                     torch_dtype=torch.float16, # FP16 precision
                     load_in_8bit=True, # 8bit Quantzation 사용
                     token=token,
+                    
+                    low_cpu_mem_usage=True,
+                    device_map={"": int(os.environ.get("RANK", 0))}
                 )
             else:
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
+                    
+                    low_cpu_mem_usage=True,
+                    device_map={"": int(os.environ.get("RANK", 0))}
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
