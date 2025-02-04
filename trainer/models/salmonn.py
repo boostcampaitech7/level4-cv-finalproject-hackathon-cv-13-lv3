@@ -302,16 +302,19 @@ class SALMONN(nn.Module):
                     speech_embeds_overlap = speech_embeds_overlap.view(B, -1, kernel[1], L)
                     speech_embeds_overlap = torch.permute(speech_embeds_overlap, [0, 3, 2, 1])
                     speech_embeds = speech_embeds_overlap.reshape(-1, kernel[1], C)
-                    speech_atts = torch.ones(speech_embeds.size()[:-1], dtype=torch.long, device=speech_embeds.device)
+                    speech_atts = torch.ones(speech_embeds.size()[:-1], dtype=torch.float16, device=speech_embeds.device)
 
                 query_tokens = self.speech_query_tokens.expand(speech_embeds.shape[0], -1, -1)
-                query_output = self.speech_Qformer.bert(
-                    query_embeds=query_tokens,
-                    encoder_hidden_states=speech_embeds,
-                    encoder_attention_mask=speech_atts,
-                    return_dict=True,
+                output = self.speech_Qformer.bert(
+                    query_tokens,
+                    speech_embeds,
+                    speech_atts
                 )
-                speech_embeds = self.speech_llama_proj(query_output.last_hidden_state)
+                if isinstance(output, tuple):
+                    query_output = output[0]
+                else:
+                    query_output = output.last_hidden_state
+                speech_embeds = self.speech_llama_proj(query_output)
 
                 if self.window_level_Qformer:
                     speech_embeds = speech_embeds.view(B, -1, speech_embeds.size(2)).contiguous()
@@ -324,7 +327,12 @@ class SALMONN(nn.Module):
 
     def encode_speech(self, spectrogram, raw_wav=None, audio_padding_mask=None):
         with self.maybe_autocast():
-            speech_embeds = self.speech_encoder(spectrogram, return_dict=True).last_hidden_state
+            outputs = self.speech_encoder(spectrogram)
+            
+            if isinstance(outputs, tuple):
+                speech_embeds = outputs[0]
+            else:
+                speech_embeds = outputs.last_hidden_state
 
             if self.beats_path and raw_wav is not None:
                 audio_embeds, _ = self.beats.extract_features(raw_wav, padding_mask=audio_padding_mask, feature_only=True)

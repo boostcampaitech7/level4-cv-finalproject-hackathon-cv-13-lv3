@@ -12,10 +12,12 @@ import multiprocessing as mp
 import torch
 import torch_tensorrt
 import pandas as pd
+import torch.nn as nn
 from tqdm import tqdm
 from accelerate import Accelerator
 from torch_tensorrt.dynamo import refit_module_weights
 from torch.export import export
+# from utils import export_llm
 # from torch_tensorrt.ptq import DataLoaderCalibrator, CalibrationAlgo
 
 # Add custom module path
@@ -27,6 +29,49 @@ from config import Config
 from utils import get_accelerator_dataloader
 from train import setup_seeds
 from metrics import compute_wer, compute_spider
+
+class ModelWrapper(nn.Module):
+    def __init__(self, model):
+        super(ModelWrapper, self).__init__()
+        self.model = model
+        
+    def forward(
+        self,
+        inputs_embeds,
+        attention_mask,
+        max_new_tokens=200,
+        num_beams=4,
+        do_sample=True,
+        min_length=1,
+        temperature=0.7,
+        top_p=0.9,
+        repetition_penalty=1.0,
+        length_penalty=1.0,
+    ):
+        # module 속성 체크하여 config 접근
+        config = self.model.module.config if hasattr(self.model, "module") else self.model.config
+        
+        return self.model.generate(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            pad_token_id=config.eos_token_id[0] if isinstance(config.eos_token_id, list) else config.eos_token_id,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
+            do_sample=do_sample,
+            min_length=min_length,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            length_penalty=length_penalty,
+        )
+
+class BeatsWrapper(nn.Module):
+    def __init__(self, beats):
+        super(BeatsWrapper, self).__init__()
+        self.beats = beats
+        
+    def forward(self, inputs, padding_mask):
+        return self.beats.extract_features(inputs, padding_mask, feature_only=True)
 
 def parse_args():
     parser = argparse.ArgumentParser(description='SALMONN Evaluation Script')
@@ -78,96 +123,128 @@ def replace_test_ann_path(cfg, task):
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_aac
     return cfg
 
-def save_speech_encoder_trt(speech_encoder):  
-    inputs = [
-        # torch_tensorrt.Input(
-        #     min_shape=[1, 128, 3000],      # [batch_size, mel_bins, max_time]
-        #     opt_shape=[8, 128, 3000],     # Whisper의 기본 입력 크기
-        #     max_shape=[16, 128, 3000],     # 최대 시퀀스 길이
-        #     dtype=torch.float16,
-        #     device=torch.device("cuda:0")
-        # )
-        torch_tensorrt.Input(
-            shape=[8, 128, 3000],
-            dtype=torch.float32,
-            device=torch.device("cuda:0")
-        )
-    ]
+def save_speech_encoder_trt(speech_encoder):
+    # 모델을 float32로 변환
+    # speech_encoder = speech_encoder.float()
     
-    enabled_precisions = {torch.float16, torch.float32}
+    # spectogram shape (8, 128, 3000), dtype=torch.float32
+    sample_input = torch.randn(16, 128, 3000, dtype=torch.float16, device=torch.device("cuda:0")).contiguous()
     
+    # 모델을 eval 모드로 설정
+    speech_encoder.eval()
+    
+    # 워밍업 단계에서 더 많은 반복 수행
+    with torch.no_grad():
+        for _ in range(3):  # 여러 번 워밍업
+            speech_encoder(sample_input)
+    
+    enabled_precisions = {torch.float16}
+    
+    inputs = [sample_input]
     speech_encoder = torch_tensorrt.compile(
         speech_encoder,
         ir="dynamo",
         inputs=inputs,
         enabled_precisions=enabled_precisions,
-        use_explicit_typing=True,
-        immutable_weights=False,
-        make_refittable=True,
-        optimization_level=1,
-        truncate_long_and_double=True,
-        heuristic_mode=False,
-        device=torch.device("cuda:0")
+        # use_explicit_typing=True,
+        # immutable_weights=True,
+        # make_refittable=False,
+        # optimization_level=5,
+        # truncate_long_and_double=True,
+        # heuristic_mode=False,
+        # strict_type_constraints=False,
+        device=torch.device("cuda:0"),
+        # cuda_graph_batch_size=8,
+        # strict_type_constraints=True,
+        # device=torch.device("cuda:0"),
+        # debug=False,               # 디버그 모드 비활성화
+        # trace_only=False,         # 전체 변환 수행
+        # preserve_parameters=True,  # 파라미터 보존
+        # min_block_size=1          # 최소 블록 크기 설정
     )
+    
+    # 변환된 모델도 여러 번 테스트
+    with torch.no_grad():
+        for _ in range(3):
+            speech_encoder(sample_input)
+    
+    # 저장 시에도 동일한 inputs 전달
     torch_tensorrt.save(speech_encoder, "./trt_models/speech_trt.ep", inputs=inputs)
-
+    
     del speech_encoder
     torch.cuda.empty_cache()
     
 def save_beats_trt(beats):
+    beats_wrapper = BeatsWrapper(beats)
+    
     inputs = [
+        torch.randn(8, 1, 320, 320, dtype=torch.float32, device=torch.device("cuda:0")),
+        # torch.randn(8, 268800, dtype=torch.bool, device=torch.device("cuda:0")),
         torch_tensorrt.Input(
-            min_shape=[1, 1, 320, 320],  # [batch_size, channels, height, width]
-            opt_shape=[16, 1, 320, 320],  # BEATs의 기본 입력 크기
-            max_shape=[32, 1, 320, 320],  # patch_embedding: Conv2d(1, 512, kernel_size=(16, 16))
-            dtype=torch.half,            # 320x320 -> (20x20) patches
+            min_shape=[1, 0],
+            opt_shape=[8, 200000],
+            max_shape=[16, 300000],
+            dtype=torch.bool,
+            device=torch.device("cuda:0")
         )
     ]
     
-    enabled_precisions = {torch.float16}
+    enabled_precisions = {torch.float16, torch.float32, torch.bool}
     
-    beats = torch_tensorrt.compile(
-        beats,
+    encoder = torch_tensorrt.compile(
+        beats_wrapper,
         ir="dynamo",
         inputs=inputs,
         enabled_precisions=enabled_precisions,
         use_explicit_typing=True,
-        immutable_weights=False,
+        immutable_weights=True,
+        make_refittable=False,
+        optimization_level=1,
+        truncate_long_and_double=True,
+        heuristic_mode=False,
+        strict_type_constraints=True,
+        device=torch.device("cuda:0"),
     )
-    torch_tensorrt.save(beats, "./trt_models/beats_trt.ep", inputs=inputs)
+    torch_tensorrt.save(encoder, "./trt_models/beats_encoder_trt.ep", inputs=inputs)
     
-    del beats
+    del encoder
     torch.cuda.empty_cache()
 
 def save_speech_Qformer_trt(speech_Qformer):
+    
+    bert = speech_Qformer.bert
+    # batch_size = 16일떄 1408, batch_size = 1일때 88
+    # 즉, batch_size * 88이 첫 번째 입력 크기
     inputs = [
-        torch_tensorrt.Input(
-            min_shape=[1, 32, 768],  # [batch_size, num_query_tokens, hidden_size]
-            opt_shape=[16, 32, 768],  # BertConfig.hidden_size = 768
-            max_shape=[32, 32, 768],  # num_query_tokens = 32 (from init_speech_Qformer)
-            dtype=torch.half,
-        ),
-        torch_tensorrt.Input(
-            min_shape=[1, 94, 1280],  # [batch_size, sequence_length, encoder_hidden_size]
-            opt_shape=[16, 94, 1280],  # Whisper encoder output: 1280 dim
-            max_shape=[32, 94, 1280],  # seq_len = 1500/16 ≈ 94 (after conv layers)
-            dtype=torch.half,
-        )
+        # (batch_size * 88, 1, 768)
+        torch.randn(88, 1, 768, dtype=torch.float32, device=torch.device("cuda:0")), # qeury tokens
+        # (batch_size * 88, 17, 2048)
+        torch.randn(88, 17, 2048, dtype=torch.float32, device=torch.device("cuda:0")), # speech embeds
+        # (batch_size * 88, 17)
+        torch.randint(0, 2, (88, 17), dtype=torch.float16, device=torch.device("cuda:0")),   # speech atts mask - 0 또는 1의 값만 가짐
     ]
     
-    enabled_precisions = {torch.float16}
     
-    speech_Qformer = torch_tensorrt.compile(
-        speech_Qformer,
+    
+    enabled_precisions = {torch.float16, torch.float32, torch.float16}
+    
+    bert = torch_tensorrt.compile(
+        bert,
         ir="dynamo",
         inputs=inputs,
         enabled_precisions=enabled_precisions,
         use_explicit_typing=True,
-        immutable_weights=False,
+        immutable_weights=True,
+        make_refittable=False,
+        optimization_level=1,
+        truncate_long_and_double=True,
+        heuristic_mode=False,
+        strict_type_constraints=True,
+        device=torch.device("cuda:0")
     )   
-    torch_tensorrt.save(speech_Qformer, "./trt_models/qformer_trt.ep", inputs=inputs)
+    torch_tensorrt.save(bert, "./trt_models/qformer_trt.ep", inputs=inputs)
     
-    del speech_Qformer
+    del bert
     torch.cuda.empty_cache()
 
 def save_llm_trt(llm):
@@ -175,7 +252,11 @@ def save_llm_trt(llm):
         llm = llm.merge_and_unload()
     
     llm.config.use_cache = False
-    llm.half()
+    # llm.half()
+    
+    # Wrap the model
+    llm.eval().cuda()
+    
     torch.cuda.empty_cache()
     
     batch_size = 8  # 로그에서 확인된 실제 배치 크기
@@ -183,19 +264,9 @@ def save_llm_trt(llm):
     hidden_size = 3072  # 로그에서 확인된 임베딩 크기
     
     inputs = [
-        # inputs_embeds
-        torch_tensorrt.Input(
-            shape=[batch_size, seq_len, hidden_size],
-            dtype=torch.float16,  # 로그에서 확인된 dtype
-            device=torch.device("cuda:0"),
-            name="inputs_embeds"
-        ),
-        torch_tensorrt.Input(
-            shape=[batch_size, seq_len],
-            dtype=torch.int64,  # 로그에서 확인된 dtype
-            device=torch.device("cuda:0"),
-            name="attention_mask"
-        ),
+        None,
+        torch.randn(batch_size, seq_len, hidden_size, dtype=torch.float16, device=torch.device("cuda:0")), # input_embeds
+        torch.randint(0, llm.config.vocab_size, (batch_size, seq_len), dtype=torch.int64, device=torch.device("cuda:0")), # attn_mask
     ]
     # calibrator = torch_tensorrt.ptq.Calibrator(...) # 양자화 callibrator
     
@@ -204,13 +275,12 @@ def save_llm_trt(llm):
         ir="dynamo",
         inputs=inputs,
         use_python_runtime=False,
-        enabled_precisions={torch.float16},
-        # enabled_precisions_to_force={torch.float16, torch.float32},
+        enabled_precisions={torch.float16, torch.int64},
         force_fp32_layers=["LayerNorm"],  # LayerNorm은 FP32로 강제
-        dynamic_batching = True,# use_dynamic_shape=True, # 
-        # use_explicit_typing=False,
-        # immutable_weights=False,
-        # make_refittable=True,
+        # dynamic_batching = True,# use_dynamic_shape=True, # 
+        use_explicit_typing=True,
+        immutable_weights=True,
+        make_refittable=False,
         optimization_level=1,
         truncate_long_and_double=True,
         heuristic_mode=False,
@@ -296,6 +366,9 @@ def main():
     llama_model, tokenizer = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
 
+    # torch_tensorrt.runtime.set_cudagraphs_mode(True)
+    torch_tensorrt.runtime.set_multi_device_safe_mode(True)
+
     # torch.cuda.empty_cache()
         
     # # Create directory
@@ -305,7 +378,18 @@ def main():
     # save_speech_encoder_trt(speech_encoder)
     # del speech_encoder
     # torch.cuda.empty_cache()
-    compile_group_2(salmonn_preprocessor.llama_model)
+    
+    # beats = salmonn_preprocessor.beats.eval().cuda()
+    # save_beats_trt(beats)
+    # del beats
+    # torch.cuda.empty_cache()
+    
+    speech_Qformer = salmonn_preprocessor.speech_Qformer.eval().cuda()
+    save_speech_Qformer_trt(speech_Qformer)
+    del speech_Qformer
+    torch.cuda.empty_cache()
+    
+    # compile_group_2(salmonn_preprocessor.llama_model)
     
     # 모델을 detach하고 requires_grad를 False로 설정
     # speech_encoder = salmonn_preprocessor.speech_encoder.detach().requires_grad_(False)

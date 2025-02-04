@@ -8,6 +8,7 @@ import numpy as np
 import argparse
 import gc
 import subprocess
+import torch_tensorrt
 from transformers import DynamicCache
 from tqdm import tqdm
 from custom_utils.Gsheet_Effi import Gsheet_param
@@ -81,7 +82,7 @@ def parse_args():
         "--cfg-path",
         type=str,
         help="path to configuration file",
-        default="/root/np-app-audiolm-evaluator/salmonn_eval_config.yaml",
+        default="/data/jins/level4-cv-finalproject-hackathon-cv-13-lv3/evaluator/salmonn_eval_config.yaml",
     )
 
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -113,7 +114,7 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     llm = salmonn.llama_model
 
     batch_size = samples["spectrogram"].shape[0]
-    spectrogram = samples["spectrogram"]
+    spectrogram = samples["spectrogram"].half()
     raw_wav = samples.get("raw_wav", None)
     audio_padding_mask = samples.get("padding_mask", None)
     speech_embeds, speech_atts = salmonn.encode_speech(
@@ -167,18 +168,42 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     inference_time = ttft + tpot
     return inference_time, ttft, tpot
 
+def load_aot_models():
+    # torch_tensorrt.runtime.set_cudagraphs_mode(True)
+    
+    # 모델 로드 전에 디렉토리 확인
+    if not os.path.exists("./trt_models"):
+        raise FileNotFoundError("TensorRT models directory not found. Please run tensorrt_aot.py first.")
+        
+    try:
+        speech_encoder = torch_tensorrt.load("./trt_models/speech_trt_optim3.ep").module()
+        # llm = torch_tensorrt.load("./trt_models/llm_trt.ep").module()
+        bert = torch_tensorrt.load("./trt_models/bert_trt_batch1.ep").module()
+        
+        return speech_encoder, bert
+    except Exception as e:
+        print(f"Error loading TensorRT models: {e}")
+        raise e
 
 def main(args):
     cfg = Config(args)
 
     print("Force batch size as 1")
     cfg.config.run.batch_size_eval = 1
-
+    
+    # Runtime 설정을 모델 로드 전에 먼저 수행
+    torch_tensorrt.runtime.set_multi_device_safe_mode(True)
+    
     # Load model
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, _ = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
 
+    speech_encoder, bert = load_aot_models()
+    salmonn_preprocessor.speech_encoder = speech_encoder
+    # bert = load_aot_models()
+    salmonn_preprocessor.speech_Qformer.bert = bert
+    
     # Load dataset
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)

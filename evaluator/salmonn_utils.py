@@ -21,7 +21,7 @@ from models.salmonn import SALMONN
 def load_preprocessor(cfg):
     salmonn_preprocessor = SALMONN.from_config(cfg.config.model)
     salmonn_preprocessor.to(cfg.config.run.device)
-    salmonn_preprocessor.eval()
+    # salmonn_preprocessor.eval()
     return salmonn_preprocessor
 
 

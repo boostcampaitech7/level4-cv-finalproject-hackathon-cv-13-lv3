@@ -804,13 +804,13 @@ class BertModel(BertPreTrainedModel):
 
     def forward(
         self,
+        query_embeds=None,
+        encoder_hidden_states=None,
+        encoder_attention_mask=None,
         input_ids=None,
         attention_mask=None,
         position_ids=None,
         head_mask=None,
-        query_embeds=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
         past_key_values=None,
         use_cache=None,
         output_attentions=None,
@@ -1045,13 +1045,13 @@ class BertLMHeadModel(BertPreTrainedModel):
             query_embeds = None
 
         outputs = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            head_mask=head_mask,
             query_embeds=query_embeds,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            head_mask=head_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_attentions=output_attentions,
