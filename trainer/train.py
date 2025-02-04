@@ -29,6 +29,7 @@ from dataset import SALMONNDataset
 from runner import Runner
 from accelerate_runner import AccelerateRunner
 
+from models.Qformer import BertLayer
 
 def parse_args():
     parser = argparse.ArgumentParser(description='train parameters')
@@ -67,6 +68,9 @@ def main():
     run_config = cfg.config.run
     model_config = cfg.config.model
     data_config = cfg.config.datasets
+    use_token_pruning = model_config.get("use_token_pruning", True)
+    token_keep_rate = model_config.get("token_keep_rate", 0.7)
+    print("Token pruning configuration: use_token_pruning={}, token_keep_rate={}".format(use_token_pruning, token_keep_rate))
 
     if args.accelerate:
         setup_seeds(run_config) # 랜덤 시드 설정
