@@ -47,7 +47,14 @@ def setup_logger():
         handlers=[logging.StreamHandler()],
     )
 
-
+def setup_accelerate_logger(accelerate, log_level_warning):
+    log_level = logging.INFO if accelerate.is_local_main_process and not log_level_warning else logging.WARN
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.StreamHandler()],
+    )
+    
 def get_dataloader(dataset, config, is_train=True, use_distributed=True):
     # 분산 학습을 사용하면
     if use_distributed:
@@ -287,3 +294,28 @@ def Gsheet_param(cfg):
         format_cell_range(worksheet, rollback_range, rollback_formatter)
     
     format_cell_range(worksheet, row_range, row_formatter)
+
+def get_accelerator_dataloader(dataset, config, is_train=True):
+    """
+    Accelerator에서 사용할 데이터로더를 생성합니다.
+    Args:
+        dataset: 데이터셋 객체
+        config: 설정 객체
+        is_train: 학습용 데이터로더인지 여부
+    Returns:
+        DataLoader: PyTorch DataLoader 객체
+    """
+    loader = DataLoader(
+        dataset,
+        batch_size=config.batch_size_train if is_train else config.batch_size_eval,
+        num_workers=config.num_workers,
+        pin_memory=True,
+        collate_fn=dataset.collater,
+        drop_last=is_train,
+        shuffle=is_train,
+    )
+
+    if is_train:
+        loader = IterLoader(loader)
+
+    return loader
