@@ -72,8 +72,8 @@ datasets:
 
 run:
   seed: 42
-  batch_size_eval: 16
-  num_workers: 16
+  batch_size_eval: 1
+  num_workers: 1
   device: "cuda"
   world-size: 2
   dist_url: "env://"

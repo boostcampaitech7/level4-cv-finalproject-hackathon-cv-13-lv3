@@ -174,20 +174,17 @@ def set_tensorrt(model):
     return model
 
 def load_aot_models():
-    # Runtime 설정을 모델 로드 전에 먼저 수행
-    torch_tensorrt.runtime.set_multi_device_safe_mode(True)
-    # torch_tensorrt.runtime.set_cudagraphs_mode(True)
     
     # 모델 로드 전에 디렉토리 확인
     if not os.path.exists("./trt_models"):
         raise FileNotFoundError("TensorRT models directory not found. Please run tensorrt_aot.py first.")
         
     try:
-        # speech_encoder = torch_tensorrt.load("./trt_models/speech_trt.ep").module()
-        # llm = torch_tensorrt.load("./trt_models/llm_trt.ep").module()
-        bert = torch_tensorrt.load("./trt_models/bert_trt_batch16.ep").module()
+        speech_encoder = torch_tensorrt.load("./trt_models/speech_trt.ep").module()
+        llm = torch.jit.load("./trt_models/llm_trt.ts").cuda()
+        bert = torch_tensorrt.load("./trt_models/bert_trt_batch1.ep").module()
         
-        return bert
+        return speech_encoder, bert, llm
     except Exception as e:
         print(f"Error loading TensorRT models: {e}")
         raise e
@@ -197,27 +194,34 @@ def main():
     cfg = Config(args)
     cfg = replace_test_ann_path(cfg, args.task)
     
+    # 배치 사이즈를 1로 강제 설정
+    print("Force batch size as 1")
+    cfg.config.run.batch_size_eval = 1
+    
     setup_seeds(cfg.config.run)
     
     # Accelerator 초기화
     accelerator = Accelerator()
     
-    # Runtime 설정을 가장 먼저 수행
+    # 각 프로세스별 CUDA 디바이스 설정
+    # torch.cuda.set_device(accelerator.local_process_index)
+    
+    # Runtime 설정
     torch_tensorrt.runtime.set_multi_device_safe_mode(True)
-    # torch_tensorrt.runtime.set_cudagraphs_mode(True)
+    # torch_tensorrt.runtime.set_cudagraphs_mode(True)  # 런타임 CUDA 그래프만 비활성화
     
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, tokenizer = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
     
-    # if cfg.config.run.jit_mode:
-    #     salmonn_preprocessor = set_tensorrt(salmonn_preprocessor)
-    # else:
-    bert = load_aot_models()
-    # salmonn_preprocessor.speech_encoder = speech_encoder
+    embed_tokens = llama_model.model.model.embed_tokens  # model.model.embed_tokens로 수정
+    
+    speech_encoder, bert, llm = load_aot_models()
+    salmonn_preprocessor.speech_encoder = speech_encoder
     salmonn_preprocessor.speech_Qformer.bert = bert
-    #     salmonn_preprocessor.llama_model = llm
+    salmonn_preprocessor.llama_model = llm
+    salmonn_preprocessor.embed_tokens = embed_tokens
             
     # Set models to eval mode
     # salmonn_preprocessor.eval()
@@ -233,8 +237,8 @@ def main():
     dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
     
     # Prepare with accelerator
-    encode_speech, prompt_wrap, tokenizer, llama_model, dataloader = accelerator.prepare(
-        salmonn_preprocessor.encode_speech, salmonn_preprocessor.prompt_wrap, tokenizer, salmonn_preprocessor.llama_model, dataloader
+    encode_speech, prompt_wrap, tokenizer, llama_model, embed_tokens, dataloader = accelerator.prepare(
+        salmonn_preprocessor.encode_speech, salmonn_preprocessor.prompt_wrap, tokenizer, llama_model, embed_tokens, dataloader
     )
 
     # # Debugging output
@@ -262,24 +266,24 @@ def main():
         idx = 0
         for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
             idx += 1
-            if idx > 5:
+            if idx > 100:
                 break
+            torch.cuda.synchronize()  # 반복 시작 전 한 번만 동기화
+        
             # Preprocess
             batch_size = samples["spectrogram"].shape[0]
             spectrogram = samples["spectrogram"].half()
             raw_wav = samples.get("raw_wav", None)
             audio_padding_mask = samples.get("padding_mask", None)
-          
-            # Encode speech
-            with accelerator.autocast():    
-                speech_embeds, speech_atts = encode_speech(
-                    spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
-                )
-          
-            # Add prompt embeds + audio embed 
+        
+            # Encode speech (speech_encoder - TensorRT)
+            speech_embeds, speech_atts = encode_speech(
+                spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
+            )
+        
+            # Add prompt embeds + audio embed (bert - TensorRT)
             prompts = [test_prompt[task] for task in samples['task']]
             templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
-
             speech_embeds, speech_atts = prompt_wrap(
                 speech_embeds, speech_atts, templated_prompts, multi_prompt=True
             )
@@ -290,9 +294,9 @@ def main():
                 device=speech_embeds.device,
             ) * tokenizer.bos_token_id
 
-            bos_embeds = llama_model.module.base_model.model.model.embed_tokens(bos)
+            bos_embeds = embed_tokens(bos)
             atts_bos = speech_atts[:, :1]
-          
+        
             embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
             attns = torch.cat([atts_bos, speech_atts], dim=1)
 
@@ -314,16 +318,16 @@ def main():
                     attention_mask=attns,
                 )
 
-            # 로컬에 결과 저장 (gather 없이)
+            # 결과 처리
             decoded_results = tokenizer.batch_decode(outputs)
             local_hyps.extend([result.split(generate_cfg.end_sym)[0].lower() for result in decoded_results])
             local_testset_ids.extend(samples["testset_id"])
             
             if not args.make_submission:
                 local_refs.extend(samples["text"])
-                
+            
             torch.cuda.empty_cache()
-    
+        
         # 모든 프로세스의 처리가 끝난 후 한번에 gather
         accelerator.wait_for_everyone()
         
