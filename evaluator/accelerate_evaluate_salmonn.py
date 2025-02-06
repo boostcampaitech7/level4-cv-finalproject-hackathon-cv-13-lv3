@@ -110,9 +110,14 @@ def main():
     
     if cfg.config.run.tensorrt:
         speech_encoder, trt_llm = load_aot_models(cfg.config.run)
+        
+        # 새로운 모델 할당
         salmonn_preprocessor.speech_encoder = speech_encoder
         salmonn_preprocessor.llama_model.forward = trt_llm.forward
-    
+        
+        del trt_llm, speech_encoder
+        torch.cuda.empty_cache()
+        
     # Load data
     dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
     
@@ -130,64 +135,65 @@ def main():
         local_hyps = []
         local_refs = []
         
-        for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
-            # Preprocess
-            batch_size = samples["spectrogram"].shape[0]
-            spectrogram = samples["spectrogram"].half()
-            raw_wav = samples.get("raw_wav", None)
-            audio_padding_mask = samples.get("padding_mask", None)
-          
-            # Encode speech
-            with accelerator.autocast():    
-                speech_embeds, speech_atts = encode_speech(
-                    spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
-                )
-          
-            # Add prompt embeds + audio embed 
-            prompts = [test_prompt[task] for task in samples['task']]
-            templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
-
-            speech_embeds, speech_atts = prompt_wrap(
-                speech_embeds, speech_atts, templated_prompts, multi_prompt=True
-            )
-
-            bos = torch.ones(
-                [batch_size, 1],
-                dtype=torch.int32,
-                device=speech_embeds.device,
-            ) * tokenizer.bos_token_id
-
-            bos_embeds = embed_tokens(bos)
-            atts_bos = speech_atts[:, :1]
-          
-            embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
-            attns = torch.cat([atts_bos, speech_atts], dim=1)
-
-            generate_cfg = cfg.config.generate
-        
+        # autocast를 loop 시작 전에 한 번만 적용
+        with torch.inference_mode():
             with accelerator.autocast():
-                outputs = llama_model.module.generate(
-                    inputs_embeds=embeds,
-                    pad_token_id=llama_model.module.config.eos_token_id[0],
-                    max_new_tokens=generate_cfg.get("max_new_tokens", 200),
-                    num_beams=generate_cfg.get("num_beams", 4),
-                    do_sample=generate_cfg.get("do_sample", True),
-                    min_length=generate_cfg.get("min_length", 1),
-                    temperature=generate_cfg.get("temperature", 0.7),
-                    top_p=generate_cfg.get("top_p", 0.9),
-                    repetition_penalty=generate_cfg.get("repetition_penalty", 1.0),
-                    length_penalty=generate_cfg.get("length_penalty", 1.0),
-                    attention_mask=attns,
-                )
+                for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
+                    # Preprocess
+                    batch_size = samples["spectrogram"].shape[0]
+                    spectrogram = samples["spectrogram"].half()
+                    raw_wav = samples.get("raw_wav", None)
+                    audio_padding_mask = samples.get("padding_mask", None)
+                
+                    # Encode speech
+                    speech_embeds, speech_atts = encode_speech(
+                        spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
+                    )
+                
+                    # Add prompt embeds + audio embed 
+                    prompts = [test_prompt[task] for task in samples['task']]
+                    templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
 
-            # 로컬에 결과 저장 (gather 없이)
-            decoded_results = tokenizer.batch_decode(outputs)
-            local_hyps.extend([result.split(generate_cfg.end_sym)[0].lower() for result in decoded_results])
-            local_testset_ids.extend(samples["testset_id"])
-            
-            if not args.make_submission:
-                local_refs.extend(samples["text"])
-    
+                    speech_embeds, speech_atts = prompt_wrap(
+                        speech_embeds, speech_atts, templated_prompts, multi_prompt=True
+                    )
+
+                    bos = torch.ones(
+                        [batch_size, 1],
+                        dtype=torch.int32,
+                        device=speech_embeds.device,
+                    ) * tokenizer.bos_token_id
+
+                    bos_embeds = embed_tokens(bos)
+                    atts_bos = speech_atts[:, :1]
+                
+                    embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
+                    attns = torch.cat([atts_bos, speech_atts], dim=1)
+
+                    generate_cfg = cfg.config.generate
+                
+                    outputs = llama_model.module.generate(
+                        inputs_embeds=embeds,
+                        pad_token_id=llama_model.module.config.eos_token_id[0],
+                        max_new_tokens=generate_cfg.get("max_new_tokens", 200),
+                        num_beams=generate_cfg.get("num_beams", 4),
+                        do_sample=generate_cfg.get("do_sample", True),
+                        min_length=generate_cfg.get("min_length", 1),
+                        temperature=generate_cfg.get("temperature", 0.7),
+                        top_p=generate_cfg.get("top_p", 0.9),
+                        repetition_penalty=generate_cfg.get("repetition_penalty", 1.0),
+                        length_penalty=generate_cfg.get("length_penalty", 1.0),
+                        attention_mask=attns,
+                    )
+
+                    # 로컬에 결과 저장 (gather 없이)
+                    decoded_results = tokenizer.batch_decode(outputs)
+                    local_hyps.extend([result.split(generate_cfg.end_sym)[0].lower() for result in decoded_results])
+                    local_testset_ids.extend(samples["testset_id"])
+                    
+                    if not args.make_submission:
+                        local_refs.extend(samples["text"])
+        
         # 모든 프로세스의 처리가 끝난 후 한번에 gather
         accelerator.wait_for_everyone()
         

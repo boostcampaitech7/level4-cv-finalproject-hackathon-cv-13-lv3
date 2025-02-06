@@ -217,10 +217,14 @@ def main(args):
     salmonn_preprocessor.eval()
 
     if cfg.config.run.tensorrt:
-        speech_encoder, llm = load_aot_models(cfg.config.run)
+        speech_encoder, trt_llm = load_aot_models(cfg.config.run)
+        
+        # 새로운 모델 할당
         salmonn_preprocessor.speech_encoder = speech_encoder
-        # salmonn_preprocessor.llama_model = llm
-        salmonn_preprocessor.llama_model.forward = llm.forward
+        salmonn_preprocessor.llama_model.forward = trt_llm.forward
+        
+        del trt_llm, speech_encoder
+        torch.cuda.empty_cache()
 
     # Load dataset
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
@@ -240,13 +244,12 @@ def main(args):
         
         with torch.inference_mode():
             with torch.cuda.amp.autocast():
-                with torch.no_grad():
-                    inference_time, ttft, tpot = model_inference(
-                        cfg,
-                        sample_batch,
-                        test_prompt,
-                        salmonn_preprocessor,
-                    )
+                inference_time, ttft, tpot = model_inference(
+                    cfg,
+                    sample_batch,
+                    test_prompt,
+                    salmonn_preprocessor,
+                )
         after_memory_allocated = torch.cuda.max_memory_allocated()
 
         torch.cuda.empty_cache()  # Clear the cache to get more accurate measurements
