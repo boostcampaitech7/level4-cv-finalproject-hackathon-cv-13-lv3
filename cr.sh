@@ -1,0 +1,1 @@
+python CR.PY --input_json_path="/data/dataset/stage2_valid_01.json" --batch_size=24 --target_task="audiocaption_v2"

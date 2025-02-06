@@ -1,0 +1,38 @@
+audiocaps/train/1018.wav | A man speaks as birds coo | Task: audiocaption_v2 | Similarity: 0.4336
+audiocaps/train/6332.wav | Two male voices talking | Task: audiocaption_v2 | Similarity: -1.9129
+audiocaps/train/7698.wav | People applauding and man gives speech | Task: audiocaption_v2 | Similarity: -0.1070
+audiocaps/train/90213.wav | A man talks while wood objects hit and an engine works far away | Task: audiocaption_v2 | Similarity: -0.5280
+audiocaps/train/70795.wav | A man speaks and baas back at some baby goats baaing | Task: audiocaption_v2 | Similarity: -0.7505
+audiocaps/train/38166.wav | A man speaking with tapping and distant speech in the background | Task: audiocaption_v2 | Similarity: -0.3567
+audiocaps/train/69757.wav | A man talking and scrapping noise | Task: audiocaption_v2 | Similarity: -0.2994
+audiocaps/train/24356.wav | A group of men talk, and someone burps loudly and lonely | Task: audiocaption_v2 | Similarity: 0.2999
+audiocaps/train/2641.wav | A man is speaking and a vehicle engine is idling | Task: audiocaption_v2 | Similarity: 0.7922
+audiocaps/train/76437.wav | Typing on a keyboard with a man speaking | Task: audiocaption_v2 | Similarity: -0.0104
+audiocaps/train/36205.wav | Men speak with humming and clip clops of horses | Task: audiocaption_v2 | Similarity: 0.7503
+audiocaps/train/23269.wav | A baby crying and breathing | Task: audiocaption_v2 | Similarity: 0.5051
+audiocaps/train/22562.wav | A man is giving a speech | Task: audiocaption_v2 | Similarity: -1.2173
+audiocaps/train/94702.wav | Food is frying in the background while a man is speaking | Task: audiocaption_v2 | Similarity: 0.7080
+audiocaps/train/25007.wav | A male speaks while spraying a spray bottle | Task: audiocaption_v2 | Similarity: 0.7060
+audiocaps/train/15450.wav | A man is speaking in the distance | Task: audiocaption_v2 | Similarity: 0.4033
+audiocaps/train/27036.wav | An infant crying and a woman speaking | Task: audiocaption_v2 | Similarity: 0.7820
+audiocaps/train/32250.wav | A spraying noise occurs as a man is talking | Task: audiocaption_v2 | Similarity: 0.9758
+audiocaps/train/15361.wav | A man's voice is overlapped with a dog barking | Task: audiocaption_v2 | Similarity: 0.4371
+audiocaps/train/83645.wav | A man talks while wood is being rasped | Task: audiocaption_v2 | Similarity: -0.3856
+audiocaps/train/23496.wav | Man speaking and very soft buzzing sound | Task: audiocaption_v2 | Similarity: 0.9354
+audiocaps/train/100113.wav | A baby crying with people speaking | Task: audiocaption_v2 | Similarity: -2.0012
+audiocaps/train/15747.wav | A man is talking with a whooshing sound in the background | Task: audiocaption_v2 | Similarity: 0.4230
+audiocaps/train/39778.wav | A male speaking, accompanied by crinkling | Task: audiocaption_v2 | Similarity: 0.2263
+audiocaps/train/56874.wav | A baby cries as a man and a woman talks | Task: audiocaption_v2 | Similarity: -2.0905
+audiocaps/train/3920.wav | A man talking into a microphone and slight chatter from the crowd | Task: audiocaption_v2 | Similarity: 0.9648
+audiocaps/train/100293.wav | A man speaking with some light rustling then light laughter from a crowd | Task: audiocaption_v2 | Similarity: -0.1652
+audiocaps/train/12823.wav | A man delivers a speech | Task: audiocaption_v2 | Similarity: -1.1477
+audiocaps/train/24742.wav | A male communicating with another male outside, followed by insects flying and buzzing in the background | Task: audiocaption_v2 | Similarity: -0.6699
+audiocaps/train/19978.wav | A man speaking and a dog panting | Task: audiocaption_v2 | Similarity: -1.0468
+audiocaps/train/16639.wav | Several males speak together as a dog barks in the background | Task: audiocaption_v2 | Similarity: -0.6498
+audiocaps/train/75199.wav | Vehicle engine starting and idling while a man talks | Task: audiocaption_v2 | Similarity: 0.3391
+audiocaps/train/3298.wav | Dog is barking, people are talking | Task: audiocaption_v2 | Similarity: -0.5345
+audiocaps/train/1910.wav | Young male voice talking | Task: audiocaption_v2 | Similarity: -0.7156
+audiocaps/train/69047.wav | Two men speak together | Task: audiocaption_v2 | Similarity: -2.7412
+audiocaps/train/53049.wav | A person talks nearby as pigeons fly and coo in the distance | Task: audiocaption_v2 | Similarity: 0.9947
+audiocaps/train/7440.wav | Buzzing, followed by a male speaking. | Task: audiocaption_v2 | Similarity: 0.1065
+Clotho/train/outdoors ambient  with distant pneumatic hammer.wav | Low, mechanical humming, with some light intermittent taps and clangs in the background. | Task: audiocaption_v2 | Similarity: 0.9150
