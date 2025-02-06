@@ -236,7 +236,6 @@ def save_llm_trt(llm, config):
         llm,
         ir="dynamo",
         inputs=compile_inputs,
-        use_python_runtime=False,
         enabled_precisions={torch.float16},
         optimization_level=config.optimization_level,
         force_fp32_layers=["LayerNorm"],
