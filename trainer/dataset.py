@@ -37,7 +37,7 @@ class SALMONNDataset(Dataset):
         self.save_vad = save_vad
         self.save_vad_cnt = 0
 
-    def extract_speech_by_vad(self, audio, original_sr, path):
+    def extract_speech_by_vad(self, audio, original_sr, path, space_sec=0.0):
         """
         원본 audio와 원본 sampling rate를 받아,
         1. 8kHz 버전을 생성하여 VAD를 적용 (타임스탬프는 초 단위)
@@ -76,7 +76,18 @@ class SALMONNDataset(Dataset):
             speech_audio_segments.append(audio[start_idx:end_idx])
             
         # 여러 음성 구간이 있을 경우 이어붙임
-        speech_audio = np.concatenate(speech_audio_segments, axis=0)
+        if len(speech_audio_segments) > 1 and space_sec > 0:
+            silence_samples = int(space_sec * whisper_target_sr)
+            silence = np.zeros(silence_samples, dtype=audio.dtype)
+            spaced_segments = []
+            for i, segment in enumerate(speech_audio_segments):
+                spaced_segments.append(segment)
+                # 마지막 구간이 아니라면 silence 삽입
+                if i < len(speech_audio_segments) - 1:
+                    spaced_segments.append(silence)
+            speech_audio = np.concatenate(spaced_segments, axis=0)
+        else:
+            speech_audio = np.concatenate(speech_audio_segments, axis=0)
 
         if self.save_vad is True and self.save_vad_cnt < 100 and remove is False:
             import random, os
