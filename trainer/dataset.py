@@ -21,6 +21,9 @@ import soundfile as sf
 import numpy as np
 from transformers import WhisperFeatureExtractor
 import librosa
+from aug import get_transforms
+
+import torchaudio
 
 
 class SALMONNDataset(Dataset):
@@ -28,12 +31,19 @@ class SALMONNDataset(Dataset):
         super().__init__()
         # 데이터 경로 설정
         self.prefix = prefix
+        
         # json 파일 로드
-        self.annotation = json.load(open(ann_path, "r"))["annotation"]
+        data = json.load(open(ann_path, "r"))["annotation"]
+        self.annotation = data
+        
         # Whisper 모델 로드 (특히 음성 데이터를 처리하는 모델)
         self.wav_processor = WhisperFeatureExtractor.from_pretrained(whisper_path)
         
         # TODO: BEAT 모델도 가져와서 task 별로 audio를 처리해야되지 않나?
+        
+        # 여기서 transforms를 한 번만 생성
+        self.transforms = get_transforms()
+
 
     def __len__(self):
         return len(self.annotation)
@@ -70,6 +80,7 @@ class SALMONNDataset(Dataset):
 
     def __getitem__(self, index):
         ann = self.annotation[index]
+        task = ann["task"]
         audio_path = (self.prefix + '/' + ann["path"]).replace("//", "/")
         try:
             # audio = 오디오 데이터, sr = 샘플링 레이트 (1초당 샘플 수, 샘플 = 오디오 데이터 단위)
@@ -77,44 +88,46 @@ class SALMONNDataset(Dataset):
         except:
             print(f"Failed to load {audio_path}. Load 0-th sample for now")
             audio, sr = sf.read(self.prefix + '/' + self.annotation[0]["path"])
-        
-        if len(audio.shape) == 2: # stereo to mono
-            audio = audio[:, 0] # 한 채널만 선택해서 사용
 
-        # 확장된 오디오 데이터 처리
-        #if "expand_wav" in ann:
-            # p = 확장된 오디오 데이터 경로
-            #for p in ann["expand_wav"]:
-                #expand_audio, _ = sf.read(self.prefix + '/' + p)
-                #if len(expand_audio.shape) == 2:
-                    #expand_audio = expand_audio[:, 0]
-                # sil = 무음 데이터
-                #sil = np.zeros(int(sr/10), dtype=float)
-                # 원본 오디오와 확장 오디오 사이에 짧은 무음 데이터를 넣어서 구분
-                #audio = np.concatenate((audio, sil, expand_audio), axis=0)
+        if len(audio.shape) == 2:  # 스테레오 또는 다채널
+            audio = np.mean(audio, axis=1)  # 모든 채널 평균
         
-        # 오디오 데이터가 1초 미만이면 무음 데이터를 추가해서 1초 이상으로 만듦
-        if len(audio) < sr: # pad audio to at least 1s
-            sil = np.zeros(sr - len(audio), dtype=float) # 무음 데이터 생성
-            audio = np.concatenate((audio, sil), axis=0) # 원본 오디오와 무음 데이터 연결
 
-        # Whisper 모델이 사용하는 샘플링 레이트와 다르면 샘플링 레이트 조정
+        # print("[Debug] task: ", task)
+        # print("[Debug] audio_path: ", audio_path)
+        
+        audio = audio.astype(np.float32)
+        audio = self.transforms(np.expand_dims(audio, axis=0), sample_rate=sr)
+        audio = audio.squeeze(0)
+        audio = audio.astype(np.float64)
+        
+        
+        if len(audio) < sr:
+            sil = np.zeros(sr - len(audio), dtype=np.float32)
+            audio = np.concatenate((audio, sil), axis=0)
+            
+            
         if sr != self.wav_processor.sampling_rate: # TODO. use more efficient implementation            
-            # Whisper 모델의 sr에 맞게 샘플링 (librosa.resample = 고품질이지만 느림)
-            # scipy.signal.resample = 빠르지만 품질이 떨어짐, 다른 방법으로 교체 가능
             audio = librosa.resample(audio, orig_sr=sr, target_sr=self.wav_processor.sampling_rate)
             sr = self.wav_processor.sampling_rate
 
-        # 오디오 데이터 30초로 자르기
-        audio = audio[: sr * 30] # truncate audio to at most 30s
-
-        # 오디오 데이터를 특징 벡터로 변환
+        
+        # 30초로 자르기 (sr * 30)
+        audio = audio[: sr * 30]
+        
+        # Whisper 전처리, 오디오 데이터를 특징 벡터로 변환
         spectrogram = self.wav_processor(audio, sampling_rate=sr, return_tensors="pt")["input_features"].squeeze()
+
+
+
+
+
         text = ann["text"] # 텍스트 추출
         # get(key, default)
         task = ann.get("task", "asr") # 작업 유형 추출
         Q = ann.get("Q", "") # 질문 추출
 
+        
         return {
             "spectrogram": spectrogram,
             "raw_wav": audio,
@@ -123,3 +136,5 @@ class SALMONNDataset(Dataset):
             "Q": Q,
             "id": ann["path"],
         }
+        
+        
