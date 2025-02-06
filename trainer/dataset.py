@@ -115,6 +115,10 @@ class SALMONNDataset(Dataset):
         raw_wav_length = torch.tensor([len(s["raw_wav"]) for s in samples])
         # 오디오 패딩
         raw_wav = pad_sequence(raw_wav, batch_first=True, padding_value=0)
+
+        # debug_str = f"이번 배치 최대 길이 : {len(raw_wav[0])}"
+        # print(debug_str)
+
         # 패딩 마스크 생성 (어디까지가 실제 오디오인지 표시)
         paddding_mask = torch.arange(raw_wav.size(1)).unsqueeze(0) >= raw_wav_length.unsqueeze(1)
         
