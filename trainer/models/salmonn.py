@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from peft import LoraConfig, TaskType, get_peft_model
 
-from .Qformer_sdpa import BertConfig, BertLMHeadModel
+from .Qformer import BertConfig, BertLMHeadModel
 from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
@@ -155,12 +155,6 @@ class SALMONN(nn.Module):
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
             self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
             
-            # Set embed_tokens based on whether LoRA is used
-            self.embed_tokens = (
-                self.llama_model.model.model.embed_tokens if self.lora 
-                else self.llama_model.model.embed_tokens
-            )
-
             # Freeze LLaMA parameters
             for name, param in self.llama_model.named_parameters():
                 param.requires_grad = False # LLM Freeze
@@ -180,7 +174,10 @@ class SALMONN(nn.Module):
                 self.llama_model = get_peft_model(self.llama_model, self.peft_config)
                 self.llama_model.print_trainable_parameters()
                 logging.info('LoRA Training')
-        
+            
+            # Set embed_tokens 
+            self.embed_tokens = self.llama_model.get_input_embeddings()
+            
         # Whisper 모델 로드
         assert whisper_path
         logging.info('Loading Whisper Model')
@@ -360,19 +357,16 @@ class SALMONN(nn.Module):
                     speech_embeds_overlap = speech_embeds_overlap.view(B, -1, kernel[1], L)
                     speech_embeds_overlap = torch.permute(speech_embeds_overlap, [0, 3, 2, 1])
                     speech_embeds = speech_embeds_overlap.reshape(-1, kernel[1], C)
-                    speech_atts = torch.ones(speech_embeds.size()[:-1], dtype=torch.float16, device=speech_embeds.device)
+                    speech_atts = torch.ones(speech_embeds.size()[:-1], dtype=torch.long, device=speech_embeds.device)
 
                 query_tokens = self.speech_query_tokens.expand(speech_embeds.shape[0], -1, -1)
-                output = self.speech_Qformer.bert(
-                    query_tokens,
-                    speech_embeds,
-                    speech_atts
+                query_output = self.speech_Qformer.bert(
+                    inputs_embeds=query_tokens,
+                    encoder_hidden_states=speech_embeds,
+                    encoder_attention_mask=speech_atts,
+                    return_dict=True,
                 )
-                if isinstance(output, tuple):
-                    query_output = output[0]
-                else:
-                    query_output = output.last_hidden_state
-                speech_embeds = self.speech_llama_proj(query_output)
+                speech_embeds = self.speech_llama_proj(query_output.last_hidden_state)
 
                 if self.window_level_Qformer:
                     speech_embeds = speech_embeds.view(B, -1, speech_embeds.size(2)).contiguous()

@@ -85,7 +85,7 @@ def parse_args():
         default="salmonn_eval_config.yaml",
     )
 
-    parser.add_argument("--device", type=str, default="cuda:1")
+    parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument(
         "--options",
         nargs="+",
@@ -154,12 +154,10 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     # TensorRT 모델은 logits만 반환
     logits = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
     next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(1)
-    print(f"next_token.shape: {next_token.shape}")
     # TPOT - input_ids를 input_embeds로 변환
     start_time = time.time()
     with torch.no_grad():
         next_embeds = salmonn.embed_tokens(next_token)  # [B, S, H]
-        print(f"next_embeds.shape: {next_embeds.shape}")
         batch_size, seq_len, hidden_size = next_embeds.shape
         
         # 패딩 크기를 동적으로 계산
@@ -181,18 +179,20 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     inference_time = ttft + tpot
     return inference_time, ttft, tpot
 
-def load_aot_models():
+def load_aot_models(config):
     
     # 모델 로드 전에 디렉토리 확인
     if not os.path.exists("./trt_models"):
         raise FileNotFoundError("TensorRT models directory not found. Please run tensorrt_aot.py first.")
         
     try:
-        speech_encoder = torch_tensorrt.load("./trt_models/speech_trt_batch1.ep").module()
-        llm = torch.jit.load("./trt_models/llm_trt_batch1.ts").cuda()
-        bert = torch_tensorrt.load("./trt_models/bert_trt_batch1.ep").module()
+        speech_path = f"./trt_models/speech_trt_batch{config.batch_size_eval}.ep"
+        llm_path = f"./trt_models/llm_trt_batch{config.batch_size_eval}.ts"
         
-        return speech_encoder, bert, llm
+        speech_encoder = torch_tensorrt.load(speech_path).module()
+        llm = torch.jit.load(llm_path).cuda()
+        
+        return speech_encoder, llm
     except Exception as e:
         print(f"Error loading TensorRT models: {e}")
         raise e
@@ -217,10 +217,10 @@ def main(args):
     salmonn_preprocessor.eval()
 
     if cfg.config.run.tensorrt:
-        speech_encoder, bert, llm = load_aot_models()
+        speech_encoder, llm = load_aot_models(cfg.config.run)
         salmonn_preprocessor.speech_encoder = speech_encoder
-        salmonn_preprocessor.speech_Qformer.bert = bert
-        salmonn_preprocessor.llama_model = llm
+        # salmonn_preprocessor.llama_model = llm
+        salmonn_preprocessor.llama_model.forward = llm.forward
 
     # Load dataset
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
