@@ -28,6 +28,8 @@ from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
 from .utils import StoppingCriteriaSub
+from models.ced.audiotransformer import AudioTransformer, CEDConfig
+#from models.ced.audiotransformer_pad import AudioTransformer, CEDConfig
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
@@ -73,6 +75,7 @@ class SALMONN(nn.Module):
         whisper_path="",
         freeze_whisper=True,
         beats_path="",
+        Ced_path="",
         freeze_beats=True,
 
         use_speech_Qformer=True,
@@ -105,6 +108,7 @@ class SALMONN(nn.Module):
         super().__init__()
 
         self.beats_path = beats_path
+        self.Ced_path = Ced_path
         self.use_speech_Qformer = use_speech_Qformer
         self.window_level_Qformer = window_level_Qformer
         self.second_per_window = second_per_window
@@ -134,16 +138,18 @@ class SALMONN(nn.Module):
                     torch_dtype=torch.float16, # FP16 precision
                     load_in_8bit=True, # 8bit Quantzation 사용
                     token=token,
-                    low_cpu_mem_usage=True,                    
-                    device_map={"": os.environ.get("RANK", 0)}
+                    low_cpu_mem_usage=True,
+                    attn_implementation='sdpa',
+                    device_map={"": int(os.environ.get("RANK", 0))}
                 )
             else:
                 self.llama_model = CausalLMWrapper.from_pretrained(
                     llama_path,
                     torch_dtype=torch.float16, # FP16 precision
                     token=token, # Meta 라이선스에 접근 가능한 Token 사용
-                    low_cpu_mem_usage=True,                    
-                    device_map={"": os.environ.get("RANK", 0)}
+                    attn_implementation='sdpa',
+                    low_cpu_mem_usage=True,
+                    device_map={"": int(os.environ.get("RANK", 0))}
                 )
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
@@ -213,12 +219,46 @@ class SALMONN(nn.Module):
                     param.requires_grad = False # BEATs Freeze
                 self.beats.eval() # 학습할 필요가 없으니 평가 모드로 설정
                 logging.info("freeze BEATs")
+        elif self.Ced_path:
+            print("Loading Ced Model")
+            logging.info("Loading Ced Model")
+            Ced_ckpt = torch.load(self.Ced_path)
+            Ced_cfg = CEDConfig()
+            self.Ced = AudioTransformer(
+                Ced_cfg,
+                patch_size=16,
+                embed_dim=768,
+                depth=12,
+                num_heads=12,
+                mlp_ratio=4,
+                outputdim=527,
+                target_length=1012,
+            )
+            self.encoder_peft_config = LoraConfig(
+                target_modules=["q_proj", "v_proj"],
+                inference_mode=False,
+                r=8,
+                lora_alpha=32,
+                lora_dropout=0.1,
+            )
+            self.Ced.load_state_dict(Ced_ckpt, strict=True)
+            self.Ced = get_peft_model(self.Ced, self.encoder_peft_config)
+            self.ln_audio = nn.LayerNorm(self.Ced.embed_dim)
+            self.Ced.print_trainable_parameters()
+            #self.Ced = torch.compile(self.Ced)
+            logging.info('LoRA Training')
+
+
 
         if self.use_speech_Qformer:
             if self.beats_path:
                 # 두 Audio Encoder의 출력을 연결해 Query Token 초기화
                 self.speech_Qformer, self.speech_query_tokens = self.init_speech_Qformer(
                     num_query_token=num_speech_query_token, speech_width=self.speech_encoder.config.d_model + self.beats.cfg.encoder_embed_dim
+                )
+            elif self.Ced_path:
+                self.speech_Qformer, self.speech_query_tokens = self.init_speech_Qformer(
+                    num_query_token=num_speech_query_token, speech_width=self.speech_encoder.config.d_model + self.Ced.embed_dim
                 )
             else:
                 # 하나의 Audio Encoder만 사용할 경우
@@ -241,7 +281,8 @@ class SALMONN(nn.Module):
                 self.speech_Qformer.eval()
                 self.speech_query_tokens.requires_grad = False
                 logging.info("freeze Speech QFormer")
-            
+
+
             self.speech_Qformer = torch.compile(self.speech_Qformer, mode=torch_compile_mode,dynamic=False, fullgraph=True)
 
             logging.info('Loading speech LLAMA proj')
@@ -315,7 +356,7 @@ class SALMONN(nn.Module):
 
                 query_tokens = self.speech_query_tokens.expand(speech_embeds.shape[0], -1, -1)
                 query_output = self.speech_Qformer.bert(
-                    inputs_embeds=query_tokens,
+                    query_embeds=query_tokens,
                     encoder_hidden_states=speech_embeds,
                     encoder_attention_mask=speech_atts,
                     return_dict=True,
@@ -337,6 +378,11 @@ class SALMONN(nn.Module):
 
             if self.beats_path and raw_wav is not None:
                 audio_embeds, _ = self.beats.extract_features(raw_wav, padding_mask=audio_padding_mask, feature_only=True)
+            elif self.Ced_path and raw_wav is not None:
+                #print(f"[DEBUG] Before CED - raw_wav.shape: {raw_wav.shape}, audio_padding_mask.shape: {audio_padding_mask.shape}")
+                audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32))
+                #audio_embeds = self.Ced(raw_wav.to(dtype=torch.float32), padding_mask=audio_padding_mask)
+                #print(f"[DEBUG] After CED - audio_embeds.shape: {audio_embeds.shape}")
             else:
                 audio_embeds = None
                         
@@ -527,6 +573,7 @@ class SALMONN(nn.Module):
         whisper_path = config.get("whisper_path")
         freeze_whisper = config.get("freeze_whisper", True)
         beats_path = config.get("beats_path", "")
+        Ced_path = config.get("Ced_path","")
         freeze_beats = config.get("freeze_beats", True)
 
         use_speech_Qformer = config.get("use_speech_Qformer", True)
@@ -561,6 +608,7 @@ class SALMONN(nn.Module):
             whisper_path=whisper_path,
             freeze_whisper=freeze_whisper,
             beats_path=beats_path,
+            Ced_path=Ced_path,
             freeze_beats=freeze_beats,
             use_speech_Qformer=use_speech_Qformer,
             num_speech_query_token=num_speech_query_token,
@@ -590,6 +638,7 @@ class SALMONN(nn.Module):
         # 훈련된 모델 불러오기
         ckpt_path = config.get("ckpt", "")
         if ckpt_path:
+            #print("Load SALMONN ckpt")
             logging.info("Load SALMONN ckpt from: {}".format(ckpt_path))
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
             model.load_state_dict(ckpt['model'], strict=False)
