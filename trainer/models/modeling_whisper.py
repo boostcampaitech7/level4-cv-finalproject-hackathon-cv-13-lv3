@@ -632,26 +632,7 @@ class WhisperEncoderLayer(nn.Module):
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
 
-        # def true_fn(operands):
-        #     hs = operands[0]
-        #     clamp_value = torch.finfo(hs.dtype).max - 1000
-        #     return (torch.clamp(hs, min=-clamp_value, max=clamp_value),)  # 튜플로 반환
-
-        # def false_fn(operands):
-        #     return (operands[0],)  # 튜플로 반환
-
-        # condition = (hidden_states.dtype == torch.float16) & (
-        #     torch.isinf(hidden_states).any() | torch.isnan(hidden_states).any()
-        # )
-        # hidden_states, = cond(condition, true_fn, false_fn, (hidden_states,))
-        
-        # if hidden_states.dtype == torch.float16 and (
-        #     torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any()
-        # ):
-        #     clamp_value = torch.finfo(hidden_states.dtype).max - 1000
-        #     hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
-
-        # 그냥 dynamic을 없애버려?
+        # dynamic하게 변환하는걸 제거하고 항상 clamp 적용
         clamp_value = torch.finfo(hidden_states.dtype).max - 1000
         hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
         outputs = (hidden_states,)

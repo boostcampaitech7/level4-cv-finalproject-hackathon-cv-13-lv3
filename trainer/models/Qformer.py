@@ -799,7 +799,7 @@ class BertModel(BertPreTrainedModel):
 
     def forward(
         self,
-        query_embeds=None,
+        inputs_embeds=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         input_ids=None,

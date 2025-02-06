@@ -154,6 +154,14 @@ class SALMONN(nn.Module):
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
             self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
+            
+            # Set embed_tokens based on whether LoRA is used
+            self.embed_tokens = (
+                self.llama_model.model.model.embed_tokens if self.lora 
+                else self.llama_model.model.embed_tokens
+            )
+
+            # Freeze LLaMA parameters
             for name, param in self.llama_model.named_parameters():
                 param.requires_grad = False # LLM Freeze
             logging.info('Loading LLaMA Done')
@@ -482,7 +490,7 @@ class SALMONN(nn.Module):
             max_length=self.max_txt_len,
             add_special_tokens=False
         ).to(spectrogram.device)
-        to_regress_embeds = self.llama_model.model.embed_tokens(to_regress_tokens.input_ids) if not self.lora else self.llama_model.model.model.embed_tokens(to_regress_tokens.input_ids)
+        to_regress_embeds = self.embed_tokens(to_regress_tokens.input_ids)
         targets = to_regress_tokens.input_ids.masked_fill(
             to_regress_tokens.input_ids == self.llama_tokenizer.pad_token_id, -100
         )
@@ -500,7 +508,7 @@ class SALMONN(nn.Module):
             dtype=to_regress_tokens.input_ids.dtype,
             device=to_regress_tokens.input_ids.device,
         ) * self.llama_tokenizer.bos_token_id
-        bos_embeds = self.llama_model.model.embed_tokens(bos) if not self.lora else self.llama_model.model.model.embed_tokens(bos)
+        bos_embeds = self.embed_tokens(bos)
         atts_bos = speech_atts[:, :1]
 
         inputs_embeds = torch.cat([bos_embeds, speech_embeds, to_regress_embeds], dim=1)
@@ -547,7 +555,7 @@ class SALMONN(nn.Module):
             dtype=torch.int32,
             device=speech_embeds.device,
         ) * self.llama_tokenizer.bos_token_id
-        bos_embeds = self.llama_model.model.embed_tokens(bos) if not self.lora else self.llama_model.model.model.embed_tokens(bos)
+        bos_embeds = self.embed_tokens(bos)
         atts_bos = speech_atts[:, :1]
 
         embeds = torch.cat([bos_embeds, speech_embeds], dim=1)

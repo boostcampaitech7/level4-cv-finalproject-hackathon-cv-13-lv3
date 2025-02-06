@@ -17,8 +17,6 @@ from tqdm import tqdm
 from accelerate import Accelerator
 from torch_tensorrt.dynamo import refit_module_weights
 from torch.export import export
-# from utils import export_llm
-# from torch_tensorrt.ptq import DataLoaderCalibrator, CalibrationAlgo
 
 # Add custom module path
 sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
@@ -31,7 +29,6 @@ from train import setup_seeds
 from metrics import compute_wer, compute_spider
 
 device = "cuda:0"
-batch_size = 8
 
 class LLMWrapper(nn.Module):
     def __init__(self, model):
@@ -114,11 +111,9 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def save_speech_encoder_trt(speech_encoder):
+def save_speech_encoder_trt(speech_encoder, config):
     # spectogram shape (8, 128, 3000), dtype=torch.float32
-    sample_input = torch.randn(batch_size, 128, 3000, dtype=torch.float16, device=torch.device(device)).contiguous()
-    
-    speech_encoder.eval()
+    sample_input = torch.randn(config.batch_size, 128, 3000, dtype=torch.float16, device=torch.device(device))
     
     # 워밍업
     with torch.no_grad():
@@ -127,7 +122,7 @@ def save_speech_encoder_trt(speech_encoder):
     
     # 컴파일용 입력 정의
     compile_inputs = [torch_tensorrt.Input(
-        shape=[batch_size, 128, 3000], 
+        shape=[config.batch_size, 128, 3000], 
         dtype=torch.float16,
         device=torch.device(device),
         format=torch.contiguous_format
@@ -138,11 +133,12 @@ def save_speech_encoder_trt(speech_encoder):
         ir="dynamo",
         inputs=compile_inputs,
         enabled_precisions={torch.float16},  # float32만 사용
-        optimization_level=5,
+        optimization_level=config.optimization_level,
+        use_explicit_typing=True,
+        truncate_long_and_double=True,
         strict_types=True,
+        device=torch.device(device),
         debug=True,
-        # workspace_size=4 * 1 << 30,
-        # precision_mode="mixed",  # mixed precision 모드 사용
     )
     
     # 테스트
@@ -157,23 +153,22 @@ def save_speech_encoder_trt(speech_encoder):
     del speech_encoder
     torch.cuda.empty_cache()
 
-def save_speech_Qformer_trt(speech_Qformer):
-    
+def save_speech_Qformer_trt(speech_Qformer, config):
     bert = speech_Qformer.bert
     # batch_size = 16일떄 1408, batch_size = 1일때 88
     compile_inputs = [
         torch_tensorrt.Input(
-            shape=[88 * batch_size, 1, 768],
+            shape=[88 * config.batch_size, 1, 768],
             dtype=torch.float32,
             device=torch.device(device)
         ),
         torch_tensorrt.Input(
-            shape=[88 * batch_size, 17, 2048],
+            shape=[88 * config.batch_size, 17, 2048],
             dtype=torch.float32,
             device=torch.device(device)
         ),
         torch_tensorrt.Input(
-            shape=[88 * batch_size, 17],
+            shape=[88 * config.batch_size, 17],
             dtype=torch.float16,
             device=torch.device(device)
         )
@@ -186,32 +181,29 @@ def save_speech_Qformer_trt(speech_Qformer):
         ir="dynamo",
         inputs=compile_inputs,
         enabled_precisions=enabled_precisions,
+        optimization_level=config.optimization_level,
         use_explicit_typing=True,
-        immutable_weights=True,
-        make_refittable=False,
-        optimization_level=3,
         truncate_long_and_double=True,
-        heuristic_mode=False,
-        strict_type_constraints=True,
-        device=torch.device(device)
+        strict_types=True,
+        device=torch.device(device),
+        debug=True,
     )   
-    
     
     # 즉, batch_size * 88이 첫 번째 입력 크기
     sample_inputs = [
         # (batch_size * 88, 1, 768)
-        torch.randn(88 * batch_size, 1, 768, dtype=torch.float32, device=torch.device(device)), # qeury tokens
+        torch.randn(88 * config.batch_size, 1, 768, dtype=torch.float32, device=torch.device(device)), # qeury tokens
         # (batch_size * 88, 17, 2048)
-        torch.randn(88 * batch_size, 17, 2048, dtype=torch.float32, device=torch.device(device)), # speech embeds
+        torch.randn(88 * config.batch_size, 17, 2048, dtype=torch.float32, device=torch.device(device)), # speech embeds
         # (batch_size * 88, 17)
-        torch.ones(88 * batch_size, 17, dtype=torch.float16, device=torch.device(device)),   # speech atts mask - 0 또는 1의 값만 가짐
+        torch.ones(88 * config.batch_size, 17, dtype=torch.float16, device=torch.device(device)),   # speech atts mask - 0 또는 1의 값만 가짐
     ]
     torch_tensorrt.save(bert, "./trt_models/qformer_trt.ep", inputs=sample_inputs)
     
     del bert
     torch.cuda.empty_cache()
 
-def save_llm_trt(llm):
+def save_llm_trt(llm, config):
     torch.cuda.empty_cache()
     if hasattr(llm, "merge_and_unload"):
         llm = llm.merge_and_unload()
@@ -225,22 +217,16 @@ def save_llm_trt(llm):
     seq_len = 111
     hidden_size = 3072
     
-    # pickle 프로토콜 버전 설정
-    torch.serialization.DEFAULT_PROTOCOL = 5
-    pickle.DEFAULT_PROTOCOL = 5 
-    
     compile_inputs = [
         torch_tensorrt.Input(
-            shape=[batch_size, seq_len, hidden_size],  # inputs_embeds 형태
+            shape=[config.batch_size, seq_len, hidden_size],  # inputs_embeds 형태
             dtype=torch.float16,
-            device=torch.device(device),
-            format=torch.contiguous_format
+            device=torch.device(device)
         ),
         torch_tensorrt.Input(
-            shape=[batch_size, seq_len],
+            shape=[config.batch_size, seq_len],
             dtype=torch.bool,
             device=torch.device(device),
-            format=torch.contiguous_format,
             optional=True
         )
     ]
@@ -252,19 +238,19 @@ def save_llm_trt(llm):
         inputs=compile_inputs,
         use_python_runtime=False,
         enabled_precisions={torch.float16},
+        optimization_level=config.optimization_level,
         force_fp32_layers=["LayerNorm"],
         use_explicit_typing=True,
-        optimization_level=3,
-        device=torch.device(device),
-        debug=True,
         truncate_long_and_double=True,
         strict_types=True,
+        device=torch.device(device),
+        debug=True,
     )
     
     # 실제 저장용 입력 생성
     inputs = [
-        torch.randn(batch_size, seq_len, hidden_size, dtype=torch.float16, device=torch.device(device)),
-        torch.ones(batch_size, seq_len, dtype=torch.bool, device=torch.device(device))
+        torch.randn(config.batch_size, seq_len, hidden_size, dtype=torch.float16, device=torch.device(device)),
+        torch.ones(config.batch_size, seq_len, dtype=torch.bool, device=torch.device(device))
     ]
     
     # 기본 저장 방식 사용
@@ -278,120 +264,47 @@ def save_llm_trt(llm):
     del llm
     torch.cuda.empty_cache()
     
-def load_aot_models():
-    speech_encoder = torch_tensorrt.load("./trt_models/speech_trt.ep")
-    beats = torch_tensorrt.load("./trt_models/beats_trt.ep")
-    speech_Qformer = torch_tensorrt.load("./trt_models/qformer_trt.ep")
-    llm = torch_tensorrt.load("./trt_models/llm_trt.ep")
-    
-    return speech_encoder, beats, speech_Qformer, llm
-
-def compile_group_1(speech_encoder, beats, speech_Qformer):
-    torch.cuda.set_device(0)
-    torch.cuda.empty_cache()
-    
-    # Create cache directory
-    os.makedirs("trt_models", exist_ok=True)
-    
+def save_aot_models(speech_encoder, speech_Qformer, llm, config):
     try:
-        # 1. speech_encoder
-        speech_encoder = speech_encoder.eval().cuda(0)
-        save_speech_encoder_trt(speech_encoder)
-        del speech_encoder
-        torch.cuda.empty_cache()
+        save_speech_encoder_trt(speech_encoder, config)
+        save_speech_Qformer_trt(speech_Qformer, config)
+        save_llm_trt(llm, config)
         
-        # # 2. beats (순차적으로 컴파일)
-        # beats = beats.cuda(0)
-        # save_beats_trt(beats)
-        # del beats
-        # torch.cuda.empty_cache()
-        
-        # # 3. speech_Qformer
-        # speech_Qformer = speech_Qformer.cuda(0)
-        # save_speech_Qformer_trt(speech_Qformer)
-        # del speech_Qformer
-        # torch.cuda.empty_cache()
     except Exception as e:
-        print(f"Error in compile_group_1: {e}")
-        raise e
+        print(f"Failed to save TensorRT models: {e}")
+        raise
 
-def compile_group_2(llm):
-    # torch.cuda.set_device(1)
-    torch.cuda.empty_cache()
-        
-    # Create directory
-    os.makedirs("trt_models", exist_ok=True)
-    
-    try:
-        # llm = llm.eval().cuda(1)
-        llm = llm.eval().cuda()
-        save_llm_trt(llm)
-    except Exception as e:
-        print(f"Error in compile_group_2: {e}")
-        raise e
-
-def main():
+def main(args):
     # Config 객체 생성 전에 CUDA 디바이스 설정
     torch.cuda.set_device(int(device.split(':')[1]))
     print(f"Current CUDA device: {torch.cuda.current_device()}")
     
-    args = parse_args()
     cfg = Config(args)
     
     setup_seeds(cfg.config.run)
-    
-    os.makedirs("trt_models", exist_ok=True)
     
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, tokenizer = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
+    salmonn_preprocessor.eval()
 
     torch_tensorrt.runtime.set_multi_device_safe_mode(True)
     torch_tensorrt.runtime.set_cudagraphs_mode(True)
 
-    # torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
         
     # # Create directory
-    # os.makedirs("trt_models", exist_ok=True)
+    os.makedirs("trt_models", exist_ok=True)
     
-    speech_encoder = salmonn_preprocessor.speech_encoder.eval().cuda()
-    save_speech_encoder_trt(speech_encoder)
-    del speech_encoder
-    torch.cuda.empty_cache()
-    
-    # beats = salmonn_preprocessor.beats.eval().cuda()
-    # save_beats_trt(beats)
-    # del beats
-    # torch.cuda.empty_cache()
-    
-    speech_Qformer = salmonn_preprocessor.speech_Qformer.eval().cuda()
-    save_speech_Qformer_trt(speech_Qformer)
-    del speech_Qformer
-    torch.cuda.empty_cache()
-    
-    compile_group_2(salmonn_preprocessor.llama_model)
-    
-    # 모델을 detach하고 requires_grad를 False로 설정
-    # speech_encoder = salmonn_preprocessor.speech_encoder.detach().requires_grad_(False)
-    # beats = salmonn_preprocessor.beats.detach().requires_grad_(False) if salmonn_preprocessor.beats is not None else None
-    # speech_Qformer = salmonn_preprocessor.speech_Qformer.detach().requires_grad_(False) if salmonn_preprocessor.speech_Qformer is not None else None
-    # llama_model = salmonn_preprocessor.llama_model.detach().requires_grad_(False)
-
-    # p1 = mp.Process(target=compile_group_1, args=(speech_encoder, beats, speech_Qformer))
-    # p2 = mp.Process(target=compile_group_2, args=(llama_model,))
-    
-    # p1.start()
-    # p2.start()
-    # p1.join()
-    # p2.join()
-    # save_speech_encoder_trt(salmonn_preprocessor.speech_encoder)
-    # save_beats_trt(salmonn_preprocessor.beats)
-    # save_speech_Qformer_trt(salmonn_preprocessor.speech_Qformer)
-    # save_llm_trt(salmonn_preprocessor.llama_model)
-
+    save_aot_models(
+        salmonn_preprocessor.speech_encoder, 
+        salmonn_preprocessor.speech_Qformer, 
+        salmonn_preprocessor.llama_model, 
+        cfg.config.run
+    )
  
 if __name__ == '__main__':
-    # mp.set_start_method('spawn', force=True)
-    random.seed(42)
-    main()
+    args = parse_args()
+    random.seed(args.run.seed)
+    main(args)

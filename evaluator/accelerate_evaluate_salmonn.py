@@ -96,49 +96,29 @@ def main():
     # Accelerator 초기화
     accelerator = Accelerator()
     
-    # 각 프로세스별 CUDA 디바이스 설정
-    # torch.cuda.set_device(accelerator.local_process_index)
-    
     # Runtime 설정
     torch_tensorrt.runtime.set_multi_device_safe_mode(True)
-    # torch_tensorrt.runtime.set_cudagraphs_mode(True)  # 런타임 CUDA 그래프만 비활성화
+    # torch_tensorrt.runtime.set_cudagraphs_mode(True)  # 런타임 CUDA 그래프만 비활성화 (Single GPU 모드에서 사용?)
     
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, tokenizer = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
+    salmonn_preprocessor.eval()
     
-    embed_tokens = llama_model.model.model.embed_tokens  # model.model.embed_tokens로 수정
-    
-    speech_encoder, bert, llm = load_aot_models()
-    salmonn_preprocessor.speech_encoder = speech_encoder
-    salmonn_preprocessor.speech_Qformer.bert = bert
-    salmonn_preprocessor.llama_model = llm
-    salmonn_preprocessor.embed_tokens = embed_tokens
-            
-    # Set models to eval mode
-    # salmonn_preprocessor.eval()
+    if cfg.config.run.tensorrt:
+        speech_encoder, bert, llm = load_aot_models()
+        salmonn_preprocessor.speech_encoder = speech_encoder
+        salmonn_preprocessor.speech_Qformer.bert = bert
+        salmonn_preprocessor.llama_model = llm
     
     # Load data
     dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
     
     # Prepare with accelerator
-    encode_speech, prompt_wrap, tokenizer, llama_model, embed_tokens, dataloader = accelerator.prepare(
-        salmonn_preprocessor.encode_speech, salmonn_preprocessor.prompt_wrap, tokenizer, llama_model, embed_tokens, dataloader
+    salmonn_preprocessor, tokenizer, dataloader = accelerator.prepare(
+        salmonn_preprocessor, tokenizer, dataloader
     )
-
-    # # Debugging output
-    # print(f"Type of llama_model: {type(llama_model)}")
-    # print(f"Has 'module' attribute: {hasattr(llama_model, 'module')}")
-    # if hasattr(llama_model, 'module'):
-    #     print(f"Type of llama_model.module: {type(llama_model.module)}")
-    #     print(f"Type of llama_model.module.config: {type(llama_model.module.config)}")
-    #     print(f"Type of llama_model.module.config.eos_token_id: {type(llama_model.module.config.eos_token_id)}")
-    #     print(f"Type of llama_model.module.config.eos_token_id[0]: {type(llama_model.module.config.eos_token_id[0])}")
-    #     print(f"Type of llama_model.module.module.embed_tokens: {type(llama_model.module.base_model.model.model.embed_tokens)}")
-    # print(f"Has 'model' attribute: {hasattr(llama_model, 'model')}")
-    # if hasattr(llama_model, 'model'):
-    #     print(f"Type of llama_model.model: {type(llama_model.model)}")
 
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)
@@ -159,14 +139,14 @@ def main():
             audio_padding_mask = samples.get("padding_mask", None)
         
             # Encode speech (speech_encoder - TensorRT)
-            speech_embeds, speech_atts = encode_speech(
+            speech_embeds, speech_atts = salmonn_preprocessor.encode_speech(
                 spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
             )
         
             # Add prompt embeds + audio embed (bert - TensorRT)
             prompts = [test_prompt[task] for task in samples['task']]
             templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
-            speech_embeds, speech_atts = prompt_wrap(
+            speech_embeds, speech_atts = salmonn_preprocessor.prompt_wrap(
                 speech_embeds, speech_atts, templated_prompts, multi_prompt=True
             )
 
@@ -176,7 +156,7 @@ def main():
                 device=speech_embeds.device,
             ) * tokenizer.bos_token_id
 
-            bos_embeds = embed_tokens(bos)
+            bos_embeds = salmonn_preprocessor.embed_tokens(bos)
             atts_bos = speech_atts[:, :1]
         
             embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
@@ -186,9 +166,9 @@ def main():
 
             # print("embeds.shape {}".format(embeds.shape))
             with accelerator.autocast():
-                outputs = llama_model.module.generate(
+                outputs = salmonn_preprocessor.llama_model.module.generate(
                     inputs_embeds=embeds,
-                    pad_token_id=llama_model.module.config.eos_token_id[0],
+                    pad_token_id=salmonn_preprocessor.llama_model.module.config.eos_token_id[0],
                     max_new_tokens=generate_cfg.get("max_new_tokens", 200),
                     num_beams=generate_cfg.get("num_beams", 4),
                     do_sample=generate_cfg.get("do_sample", True),

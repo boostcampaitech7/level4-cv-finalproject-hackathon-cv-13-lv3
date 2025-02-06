@@ -114,8 +114,7 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     llm = salmonn.llama_model
 
     batch_size = samples["spectrogram"].shape[0]
-    # 입력부터 contiguous하게 만들기
-    spectrogram = samples["spectrogram"].half().contiguous()
+    spectrogram = samples["spectrogram"].half()
     raw_wav = samples.get("raw_wav", None)
     audio_padding_mask = samples.get("padding_mask", None)
     
@@ -123,9 +122,6 @@ def model_inference(cfg, samples, test_prompt, salmonn):
         speech_embeds, speech_atts = salmonn.encode_speech(
             spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
         )
-        # 중간 결과물도 contiguous하게
-        speech_embeds = speech_embeds.contiguous()
-        speech_atts = speech_atts.contiguous()
 
     prompts = [test_prompt[task] for task in samples["task"]]
     templated_prompts = [
@@ -135,9 +131,6 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     speech_embeds, speech_atts = salmonn.prompt_wrap(
         speech_embeds, speech_atts, templated_prompts, multi_prompt=True
     )
-    # prompt_wrap 결과도 contiguous하게
-    speech_embeds = speech_embeds.contiguous()
-    speech_atts = speech_atts.contiguous()
 
     bos = torch.ones(
         [batch_size, 1],
@@ -145,12 +138,11 @@ def model_inference(cfg, samples, test_prompt, salmonn):
         device=speech_embeds.device,
     ) * salmonn.llama_tokenizer.bos_token_id
     
-    bos_embeds = salmonn.embed_tokens(bos).contiguous()
-    atts_bos = speech_atts[:, :1].contiguous()
+    bos_embeds = salmonn.embed_tokens(bos)
+    atts_bos = speech_atts[:, :1]
 
-    # 최종 입력을 contiguous하고 clone
-    speech_embeds = torch.cat([bos_embeds, speech_embeds], dim=1).contiguous().clone()
-    speech_atts = torch.cat([atts_bos, speech_atts], dim=1).contiguous().clone()
+    speech_embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
+    speech_atts = torch.cat([atts_bos, speech_atts], dim=1)
     
     outputs = llm(
         inputs_embeds=speech_embeds,
@@ -161,15 +153,23 @@ def model_inference(cfg, samples, test_prompt, salmonn):
 
     # TensorRT 모델은 logits만 반환
     logits = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
-    next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(1).contiguous()
-
+    next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(1)
+    print(f"next_token.shape: {next_token.shape}")
     # TPOT - input_ids를 input_embeds로 변환
     start_time = time.time()
     with torch.no_grad():
-        next_embeds = salmonn.embed_tokens(next_token)  # [1,1,3072]
-        padded_embeds = F.pad(next_embeds, (0, 0, 0, 110, 0, 0))  # [1,111,3072]
-        attention_mask = torch.ones([1, 111], dtype=torch.bool, device=next_token.device)
-        attention_mask[:, 1:] = False  # 패딩 부분 마스크
+        next_embeds = salmonn.embed_tokens(next_token)  # [B, S, H]
+        print(f"next_embeds.shape: {next_embeds.shape}")
+        batch_size, seq_len, hidden_size = next_embeds.shape
+        
+        # 패딩 크기를 동적으로 계산
+        target_len = 111  # 목표 시퀀스 길이
+        pad_len = target_len - seq_len
+        padded_embeds = F.pad(next_embeds, (0, 0, 0, pad_len, 0, 0))  # [B, 111, H]
+        
+        # 어텐션 마스크도 배치 크기에 맞게 생성
+        attention_mask = torch.ones([batch_size, target_len], dtype=torch.bool, device=next_token.device)
+        attention_mask[:, seq_len:] = False  # 패딩된 부분만 마스크
         
         _ = llm(
             inputs_embeds=padded_embeds,
@@ -216,14 +216,11 @@ def main(args):
     salmonn_preprocessor.llama_model = llama_model
     salmonn_preprocessor.eval()
 
-    # embed_tokens 함수 저장 - 올바른 경로로 접근
-    embed_tokens = llama_model.model.model.embed_tokens  # model.model.embed_tokens로 수정
-    
-    speech_encoder, bert, llm = load_aot_models()
-    salmonn_preprocessor.speech_encoder = speech_encoder
-    salmonn_preprocessor.speech_Qformer.bert = bert
-    salmonn_preprocessor.llama_model = llm
-    salmonn_preprocessor.embed_tokens = embed_tokens
+    if cfg.config.run.tensorrt:
+        speech_encoder, bert, llm = load_aot_models()
+        salmonn_preprocessor.speech_encoder = speech_encoder
+        salmonn_preprocessor.speech_Qformer.bert = bert
+        salmonn_preprocessor.llama_model = llm
 
     # Load dataset
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
@@ -239,7 +236,8 @@ def main(args):
     tpots = []
 
     for it in tqdm(range(args.num_it + args.num_warmup)):
-        torch.cuda.synchronize()
+        torch.cuda.synchronize()  # 이전 반복의 모든 CUDA 연산 완료 대기
+        
         with torch.inference_mode():
             with torch.cuda.amp.autocast():
                 with torch.no_grad():
@@ -249,7 +247,6 @@ def main(args):
                         test_prompt,
                         salmonn_preprocessor,
                     )
-        torch.cuda.synchronize()
         after_memory_allocated = torch.cuda.max_memory_allocated()
 
         torch.cuda.empty_cache()  # Clear the cache to get more accurate measurements
