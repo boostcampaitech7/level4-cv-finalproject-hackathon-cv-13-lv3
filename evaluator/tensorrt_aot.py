@@ -33,41 +33,6 @@ from metrics import compute_wer, compute_spider
 device = "cuda:0"
 batch_size = 8
 
-class ModelWrapper(nn.Module):
-    def __init__(self, model):
-        super(ModelWrapper, self).__init__()
-        self.model = model
-        
-    def forward(
-        self,
-        inputs_embeds,
-        attention_mask,
-        max_new_tokens=200,
-        num_beams=4,
-        do_sample=True,
-        min_length=1,
-        temperature=0.7,
-        top_p=0.9,
-        repetition_penalty=1.0,
-        length_penalty=1.0,
-    ):
-        # module 속성 체크하여 config 접근
-        config = self.model.module.config if hasattr(self.model, "module") else self.model.config
-        
-        return self.model.generate(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            pad_token_id=config.eos_token_id[0] if isinstance(config.eos_token_id, list) else config.eos_token_id,
-            max_new_tokens=max_new_tokens,
-            num_beams=num_beams,
-            do_sample=do_sample,
-            min_length=min_length,
-            temperature=temperature,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            length_penalty=length_penalty,
-        )
-
 class LLMWrapper(nn.Module):
     def __init__(self, model):
         super(LLMWrapper, self).__init__()
@@ -191,42 +156,6 @@ def save_speech_encoder_trt(speech_encoder):
     
     del speech_encoder
     torch.cuda.empty_cache()
-    
-def save_beats_trt(beats):
-    beats_wrapper = BeatsWrapper(beats)
-    
-    inputs = [
-        torch.randn(8, 1, 320, 320, dtype=torch.float32, device=torch.device(device)),
-        # torch.randn(8, 268800, dtype=torch.bool, device=torch.device(device)),
-        torch_tensorrt.Input(
-            min_shape=[1, 0],
-            opt_shape=[8, 200000],
-            max_shape=[16, 300000],
-            dtype=torch.bool,
-            device=torch.device(device)
-        )
-    ]
-    
-    enabled_precisions = {torch.float16, torch.float32, torch.bool}
-    
-    encoder = torch_tensorrt.compile(
-        beats_wrapper,
-        ir="dynamo",
-        inputs=inputs,
-        enabled_precisions=enabled_precisions,
-        use_explicit_typing=True,
-        immutable_weights=True,
-        make_refittable=False,
-        optimization_level=3,
-        truncate_long_and_double=True,
-        heuristic_mode=False,
-        strict_type_constraints=True,
-        device=torch.device(device),
-    )
-    torch_tensorrt.save(encoder, "./trt_models/beats_encoder_trt.ep", inputs=inputs)
-    
-    del encoder
-    torch.cuda.empty_cache()
 
 def save_speech_Qformer_trt(speech_Qformer):
     
@@ -245,12 +174,12 @@ def save_speech_Qformer_trt(speech_Qformer):
         ),
         torch_tensorrt.Input(
             shape=[88 * batch_size, 17],
-            dtype=torch.bool,
+            dtype=torch.float16,
             device=torch.device(device)
         )
     ]
     
-    enabled_precisions = {torch.float16, torch.float32, torch.bool}
+    enabled_precisions = {torch.float16, torch.float32}
     
     bert = torch_tensorrt.compile(
         bert,
@@ -275,7 +204,7 @@ def save_speech_Qformer_trt(speech_Qformer):
         # (batch_size * 88, 17, 2048)
         torch.randn(88 * batch_size, 17, 2048, dtype=torch.float32, device=torch.device(device)), # speech embeds
         # (batch_size * 88, 17)
-        torch.ones(88 * batch_size, 17, dtype=torch.bool, device=torch.device(device)),   # speech atts mask - 0 또는 1의 값만 가짐
+        torch.ones(88 * batch_size, 17, dtype=torch.float16, device=torch.device(device)),   # speech atts mask - 0 또는 1의 값만 가짐
     ]
     torch_tensorrt.save(bert, "./trt_models/qformer_trt.ep", inputs=sample_inputs)
     
@@ -283,12 +212,6 @@ def save_speech_Qformer_trt(speech_Qformer):
     torch.cuda.empty_cache()
 
 def save_llm_trt(llm):
-    # 필요한 모듈들을 함수 시작 부분에서 import
-    import torch
-    import torch_tensorrt
-    import pickle
-    import torch.serialization
-    
     torch.cuda.empty_cache()
     if hasattr(llm, "merge_and_unload"):
         llm = llm.merge_and_unload()

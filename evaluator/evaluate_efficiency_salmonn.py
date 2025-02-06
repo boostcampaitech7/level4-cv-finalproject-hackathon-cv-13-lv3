@@ -85,7 +85,7 @@ def parse_args():
         default="/data/jins/level4-cv-finalproject-hackathon-cv-13-lv3/evaluator/salmonn_eval_config.yaml",
     )
 
-    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--device", type=str, default="cuda:1")
     parser.add_argument(
         "--options",
         nargs="+",
@@ -188,8 +188,8 @@ def load_aot_models():
         raise FileNotFoundError("TensorRT models directory not found. Please run tensorrt_aot.py first.")
         
     try:
-        speech_encoder = torch_tensorrt.load("./trt_models/speech_trt.ep").module()
-        llm = torch.jit.load("./trt_models/llm_trt.ts").cuda()
+        speech_encoder = torch_tensorrt.load("./trt_models/speech_trt_batch1.ep").module()
+        llm = torch.jit.load("./trt_models/llm_trt_batch1.ts").cuda()
         bert = torch_tensorrt.load("./trt_models/bert_trt_batch1.ep").module()
         
         return speech_encoder, bert, llm

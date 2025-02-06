@@ -70,109 +70,6 @@ def replace_test_ann_path(cfg, task):
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_aac
     return cfg
 
-def set_tensorrt(model):
-    cache_dir = "tmp/trt_cache"
-    if os.path.exists(cache_dir):
-        import shutil
-        shutil.rmtree(cache_dir)
-    os.makedirs(cache_dir, exist_ok=True)
-    
-    torch.cuda.empty_cache()
-    model = model.cuda()
-    torch_tensorrt.runtime.set_multi_device_safe_mode(True)
-    torch_tensorrt.runtime.set_cudagraphs_mode(True)
-    
-    speech_inputs = [
-        torch_tensorrt.Input(
-            shape=[16, 80, 1500],  
-            dtype=torch.float16,  # float16에서 int64로 변경
-            device='cuda'
-        )
-    ]
-    speech_encoder = model.speech_encoder
-    # speech_encoder = torch.compile(
-    #     speech_encoder, 
-    #     backend="torch_tensorrt",
-    #     options={
-    #         "min_block_size": 2,
-    #         "make_refittable": True,
-    #         "use_python_runtime": False,
-    #         "enabled_precisions": [torch.float16],
-    #         "immutable_weights": False,
-    #         "cache_built_engines": True,
-    #         "reuse_cached_engines": True,
-    #         "engine_cache_dir": cache_dir,
-    #         "timing_cache_prefix": "speech_encoder"  # 캐시 파일 구분
-    #     }
-    # )
-    speech_encoder = torch_tensorrt.compile(
-        speech_encoder,
-        ir="dynamo",
-        inputs=speech_inputs,
-        enabled_precisions={torch.float16},
-        use_explicit_typing=True,
-        immutable_weights=False,
-        reuse_cached_engines=True,
-        cache_built_engines=True,
-        make_refittable=True,
-        engine_cache_dir="tmp/trt_cache",
-        timing_cache_prefix="speech",
-        optimization_level=1,
-        truncate_long_and_double=True,
-        # refit=False,
-        engine_cache_size=4 * (1 << 30),
-        device='cuda',
-        heuristic_mode=False
-    )
-    beats = model.beats
-    # beats = torch.compile(beats, mode="max-autotune")
-
-    speech_Qformer = model.speech_Qformer
-    # speech_Qformer = torch.compile(speech_Qformer, backend="torch_tensorrt")
-    
-    # # PEFT 레이어 병합
-    # llm = model.llama_model
-    # if hasattr(llm, "merge_and_unload"):
-    #     llm = llm.merge_and_unload()
-    
-    # llm.config.use_cache = False
-    # # llm = torch.compile(llm, backend="torch_tensorrt")
-    # # cache engine을 사용해 여러번 반복되는 계산을 최적화 (맨 처음엔 속도가 느리지만 두번째 이후엔 빠름)
-    # llm_inputs = [
-    #     torch_tensorrt.Input(
-    #         shape=[8, 1500],  
-    #         dtype=torch.int64,  # float16에서 int64로 변경
-    #         device='cuda'
-    #     )
-    # ]
-    # # llm = torch.compile(llm, backend="tensorrt")    
-    # llm = torch_tensorrt.compile(
-    #     llm,
-    #     ir="dynamo",
-    #     inputs=llm_inputs,
-    #     use_python_runtime=False,
-    #     enabled_precisions=[torch.float16],
-    #     immutable_weights=False,
-    #     make_refittable=True,
-    #     cache_built_engines=True,
-    #     reuse_cached_engines=True,
-    #     engine_cache_dir=cache_dir,
-    #     timing_cache_prefix="llm",
-    #     optimization_level=1,
-    #     truncate_long_and_double=True,
-    #     refit=False,
-    #     max_workspace_size=4 * (1 << 30),
-    #     device='cuda'
-    # )
-    
-    model.speech_encoder = speech_encoder
-    # model.beats = beats
-    # model.speech_Qformer = speech_Qformer
-    # model.llama_model = llm
-    
-    torch.cuda.empty_cache()
-    return model
-
 def load_aot_models():
     
     # 모델 로드 전에 디렉토리 확인
@@ -182,7 +79,7 @@ def load_aot_models():
     try:
         speech_encoder = torch_tensorrt.load("./trt_models/speech_trt.ep").module()
         llm = torch.jit.load("./trt_models/llm_trt.ts").cuda()
-        bert = torch_tensorrt.load("./trt_models/bert_trt_batch1.ep").module()
+        bert = torch_tensorrt.load("./trt_models/bert_trt.ep").module()
         
         return speech_encoder, bert, llm
     except Exception as e:
@@ -193,10 +90,6 @@ def main():
     args = parse_args()
     cfg = Config(args)
     cfg = replace_test_ann_path(cfg, args.task)
-    
-    # 배치 사이즈를 1로 강제 설정
-    print("Force batch size as 1")
-    cfg.config.run.batch_size_eval = 1
     
     setup_seeds(cfg.config.run)
     
@@ -225,13 +118,6 @@ def main():
             
     # Set models to eval mode
     # salmonn_preprocessor.eval()
-    
-    # else:
-    #     speech_encoder, beats, speech_Qformer, llm = load_aot_models()
-    #     salmonn_preprocessor.speech_encoder = speech_encoder
-    #     salmonn_preprocessor.beats = beats
-    #     salmonn_preprocessor.speech_Qformer = speech_Qformer
-    #     salmonn_preprocessor.llama_model = llm
     
     # Load data
     dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
@@ -263,11 +149,7 @@ def main():
         local_hyps = []
         local_refs = []
         
-        idx = 0
         for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
-            idx += 1
-            if idx > 100:
-                break
             torch.cuda.synchronize()  # 반복 시작 전 한 번만 동기화
         
             # Preprocess
