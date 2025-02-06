@@ -82,7 +82,7 @@ def parse_args():
         "--cfg-path",
         type=str,
         help="path to configuration file",
-        default="/data/jins/level4-cv-finalproject-hackathon-cv-13-lv3/evaluator/salmonn_eval_config.yaml",
+        default="salmonn_eval_config.yaml",
     )
 
     parser.add_argument("--device", type=str, default="cuda:1")
