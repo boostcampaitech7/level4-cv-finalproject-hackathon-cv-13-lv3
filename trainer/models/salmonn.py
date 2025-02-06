@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from transformers import StoppingCriteriaList, AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from peft import LoraConfig, TaskType, get_peft_model
 
-from .Qformer_sdpa import BertConfig, BertLMHeadModel
+from .Qformer import BertConfig, BertLMHeadModel
 from .modeling_llama import LlamaForCausalLM
 from .modeling_whisper import WhisperModel
 from .beats.BEATs import BEATsConfig, BEATs
@@ -356,7 +356,7 @@ class SALMONN(nn.Module):
 
                 query_tokens = self.speech_query_tokens.expand(speech_embeds.shape[0], -1, -1)
                 query_output = self.speech_Qformer.bert(
-                    query_embeds=query_tokens,
+                    inputs_embeds=query_tokens,
                     encoder_hidden_states=speech_embeds,
                     encoder_attention_mask=speech_atts,
                     return_dict=True,

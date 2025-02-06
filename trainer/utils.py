@@ -295,6 +295,8 @@ def Gsheet_param(cfg):
     
     format_cell_range(worksheet, row_range, row_formatter)
 
+from sampler import BucketingBatchSampler
+
 def get_accelerator_dataloader(dataset, config, is_train=True):
     """
     Accelerator에서 사용할 데이터로더를 생성합니다.
@@ -305,14 +307,25 @@ def get_accelerator_dataloader(dataset, config, is_train=True):
     Returns:
         DataLoader: PyTorch DataLoader 객체
     """
-    loader = DataLoader(
-        dataset,
+
+    # BucketingBatchSampler 생성 (accelerator가 분산 상태라면 distributed=True)
+    batch_sampler = BucketingBatchSampler(
+        dataset, 
         batch_size=config.batch_size_train if is_train else config.batch_size_eval,
+        default_length=30.0, 
+        shuffle=True, 
+        distributed=True
+    )
+
+    loader = DataLoader(
+        dataset,     
         num_workers=config.num_workers,
         pin_memory=True,
         collate_fn=dataset.collater,
-        drop_last=is_train,
-        shuffle=is_train,
+        # batch_size=config.batch_size_train if is_train else config.batch_size_eval,
+        # drop_last=is_train,
+        # shuffle=is_train,
+        batch_sampler=batch_sampler
     )
 
     if is_train:
