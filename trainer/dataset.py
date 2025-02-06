@@ -21,6 +21,9 @@ import soundfile as sf
 import numpy as np
 from transformers import WhisperFeatureExtractor
 import librosa
+from aug import get_transforms
+
+import torchaudio
 
 from silero_vad import load_silero_vad, get_speech_timestamps
 
@@ -29,13 +32,20 @@ class SALMONNDataset(Dataset):
         super().__init__()
         # 데이터 경로 설정
         self.prefix = prefix
+        
         # json 파일 로드
-        self.annotation = json.load(open(ann_path, "r"))["annotation"]
+        data = json.load(open(ann_path, "r"))["annotation"]
+        self.annotation = data
+        
         # Whisper 모델 로드 (특히 음성 데이터를 처리하는 모델)
         self.wav_processor = WhisperFeatureExtractor.from_pretrained(whisper_path)
         self.vad_model = load_silero_vad()
         self.save_vad = save_vad
         self.save_vad_cnt = 0
+        
+        # 증강 한번만 로드
+        self.transforms = get_transforms()
+        
 
     def extract_speech_by_vad(self, audio, original_sr, path, space_sec=0.0):
         """
@@ -140,6 +150,7 @@ class SALMONNDataset(Dataset):
 
     def __getitem__(self, index):
         ann = self.annotation[index]
+        task = ann["task"]
         audio_path = (self.prefix + '/' + ann["path"]).replace("//", "/")
         try:
             # audio = 오디오 데이터, sr = 샘플링 레이트 (1초당 샘플 수, 샘플 = 오디오 데이터 단위)
@@ -147,10 +158,10 @@ class SALMONNDataset(Dataset):
         except:
             print(f"Failed to load {audio_path}. Load 0-th sample for now")
             audio, sr = sf.read(self.prefix + '/' + self.annotation[0]["path"])
-        
-        if len(audio.shape) == 2: # stereo to mono
-            audio = audio[:, 0] # 한 채널만 선택해서 사용
 
+        if len(audio.shape) == 2:  # 스테레오 또는 다채널
+            audio = np.mean(audio, axis=1)  # 모든 채널 평균
+        
         # 확장된 오디오 데이터 처리
         #if "expand_wav" in ann:
             # p = 확장된 오디오 데이터 경로
@@ -163,6 +174,11 @@ class SALMONNDataset(Dataset):
                 # 원본 오디오와 확장 오디오 사이에 짧은 무음 데이터를 넣어서 구분
                 #audio = np.concatenate((audio, sil, expand_audio), axis=0)
         
+        audio = audio.astype(np.float32)
+        audio = self.transforms(np.expand_dims(audio, axis=0), sample_rate=sr)
+        audio = audio.squeeze(0)
+        audio = audio.astype(np.float64)
+
         # 오디오 데이터가 1초 미만이면 무음 데이터를 추가해서 1초 이상으로 만듦
         if len(audio) < sr: # pad audio to at least 1s
             sil = np.zeros(sr - len(audio), dtype=float) # 무음 데이터 생성
@@ -189,6 +205,7 @@ class SALMONNDataset(Dataset):
         # get(key, default)
         Q = ann.get("Q", "") # 질문 추출
 
+        
         return {
             "spectrogram": spectrogram,
             "raw_wav": audio,
@@ -197,3 +214,5 @@ class SALMONNDataset(Dataset):
             "Q": Q,
             "id": ann["path"],
         }
+        
+        

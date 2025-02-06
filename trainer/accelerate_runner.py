@@ -269,6 +269,8 @@ class AccelerateRunner:
         start_time = time.time()
         best_agg_metric = 0
         best_epoch = 0
+        
+        print(f"Checkpoint save frequency: {self.config.config.run.get('save_ep', 3)} epochs")
 
         for cur_epoch in range(self.start_epoch, self.max_epoch):
             if self.evaluate_only:
@@ -279,22 +281,24 @@ class AccelerateRunner:
             train_stats = self.train_epoch(cur_epoch)
             self.log_stats(train_stats, split_name="train")
 
-            # validating phase
-            logging.info("Validating Phase")
-            valid_log = self.valid_epoch(cur_epoch, "valid", decode=False, save_json=False)
-            if valid_log is not None:
-                if self.accelerator.is_main_process:
-                    agg_metrics = valid_log["agg_metrics"]
-                    if agg_metrics > best_agg_metric:
-                        best_agg_metric = agg_metrics
-                        best_epoch = cur_epoch
-                        self.save_checkpoint(cur_epoch, is_best=True)
+            save_ep = self.config.config.run.get("save_ep", 3)  # 기본값 -> 3 ep마다 저장
+            if cur_epoch % save_ep == 0 or cur_epoch == self.max_epoch - 1:
+                logging.info("Validating Phase")
+                valid_log = self.valid_epoch(cur_epoch, "valid", decode=False, save_json=False)
+                if valid_log is not None:
+                    if self.accelerator.is_main_process:
+                        agg_metrics = valid_log["agg_metrics"]
+                        if agg_metrics > best_agg_metric:
+                            best_agg_metric = agg_metrics
+                            best_epoch = cur_epoch
+                            self.save_checkpoint(cur_epoch, is_best=True)
 
-                    valid_log.update({"best_epoch": best_epoch})
-                    self.log_stats(valid_log, split_name="valid")
-                    wandb.log({"valid/epoch": cur_epoch, "valid/agg_metrics": agg_metrics})
+                        valid_log.update({"best_epoch": best_epoch})
+                        self.log_stats(valid_log, split_name="valid")
+                        wandb.log({"valid/epoch": cur_epoch, "valid/agg_metrics": agg_metrics})
+                
+                self.save_checkpoint(cur_epoch, is_best=False)
 
-            self.save_checkpoint(cur_epoch, is_best=False)
 
             if self.accelerator.use_distributed:
                 dist.barrier()
