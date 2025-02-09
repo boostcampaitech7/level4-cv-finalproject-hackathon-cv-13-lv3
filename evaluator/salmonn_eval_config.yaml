@@ -70,7 +70,8 @@ datasets:
   test_ann_path_asr: "/data/dataset/test_asr.json"
   test_ann_path_aac: "/data/dataset/test_aac.json"
   whisper_path: "openai/whisper-large-v3-turbo"
-
+  valid_ann_path: "/data/dataset/new_jsons/rms_volume_0/stage1_train_indented_1.json" #"/data/dataset/stage1_valid_01.json"
+  
 run:
   seed: 42
   batch_size_eval: 8
@@ -80,5 +81,5 @@ run:
   dist_url: "env://"
   distributed: True
   tensorrt: True
-  optimization_level: 5
+  optimization_level: 3
   tensorrt_device: "cuda:0"

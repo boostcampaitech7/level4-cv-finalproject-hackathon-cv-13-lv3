@@ -27,6 +27,8 @@ def load_preprocessor(cfg):
 
 def load_model(salmonn_preprocessor):
     model = salmonn_preprocessor.llama_model
+    if hasattr(model, "merge_and_unload"):
+        model = model.merge_and_unload()
     tokenizer = salmonn_preprocessor.llama_tokenizer
     return model, tokenizer
 
