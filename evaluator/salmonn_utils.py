@@ -10,6 +10,8 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 from transformers import WhisperFeatureExtractor
 
+from aug_eval import get_transforms
+
 import os
 
 # Add custom module path
@@ -44,6 +46,9 @@ class SALMONNTestDataset(Dataset):
         self.wav_processor = WhisperFeatureExtractor.from_pretrained(whisper_path)
 
         self.task = task
+        
+        self.transforms = get_transforms()
+
 
     def __len__(self):
         return len(self.annotation)
@@ -79,31 +84,43 @@ class SALMONNTestDataset(Dataset):
 
     def __getitem__(self, index):
         ann = self.annotation[index]
-        audio_path = os.path.join(self.prefix, ann["path"])
+        #audio_path = os.path.join(self.prefix, ann["path"])
+        audio_path = (self.prefix + '/' + ann["path"]).replace("//", "/")
         try:
+            # audio = 오디오 데이터, sr = 샘플링 레이트 (1초당 샘플 수, 샘플 = 오디오 데이터 단위)
             audio, sr = sf.read(audio_path)
         except:
             print(f"Failed to load {audio_path}. Load 0-th sample for now")
-            audio, sr = sf.read(os.path.join(self.prefix, self.annotation[0]["path"]))
+            #audio, sr = sf.read(os.path.join(self.prefix, self.annotation[0]["path"]))
+            audio, sr = sf.read(self.prefix + '/' + self.annotation[0]["path"])
         
-        if len(audio.shape) == 2: # stereo to mono
-            audio = audio[:, 0]
-
-        if len(audio) < sr: # pad audio to at least 1s
-            sil = np.zeros(sr - len(audio), dtype=float)
+        if len(audio.shape) == 2:  # 스테레오 또는 다채널
+            audio = np.mean(audio, axis=1)  # 모든 채널 평균
+        
+        
+        audio = audio.astype(np.float32)
+        audio = self.transforms(np.expand_dims(audio, axis=0), sample_rate=sr)
+        audio = audio.squeeze(0)
+        audio = audio.astype(np.float64)
+        
+        
+        if len(audio) < sr:
+            sil = np.zeros(sr - len(audio), dtype=np.float32)
             audio = np.concatenate((audio, sil), axis=0)
-
+            
+            
         if sr != self.wav_processor.sampling_rate: # TODO. use more efficient implementation            
             audio = librosa.resample(audio, orig_sr=sr, target_sr=self.wav_processor.sampling_rate)
             sr = self.wav_processor.sampling_rate
-
+        
         audio = audio[: sr * 30] # truncate audio to at most 30s
-
+        
         spectrogram = self.wav_processor(audio, sampling_rate=sr, return_tensors="pt")["input_features"].squeeze()
+        
         testset_id = ann["testset_id"]
         task = ann.get("task", "asr")
         Q = ann.get("Q", "")
-
+        
         entity = {
             "testset_id": testset_id,
             "spectrogram": spectrogram,
