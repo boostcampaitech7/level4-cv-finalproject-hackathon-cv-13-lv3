@@ -23,7 +23,7 @@ model:
   token: "" # Use hf token to access gated repositories
   only_preprocessor: False
 
-  ckpt: "/data/kjh/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/0206-llama-whisperv3turbo-BEATs-aug_Pitch/checkpoint_best.pth"
+  ckpt: "/data/kjh/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/Final_outputs_stage2/202502090153/checkpoint_best.pth"
   #"/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-Gemma-2-2b-it-whisper-small-5epoch/checkpoint_best.pth"
 
   freeze_whisper: True
