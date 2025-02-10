@@ -72,14 +72,15 @@ sh accelerate_train.sh --cfg-path {train_config_path}
 <br>
 ## Evaluate
 `./evaluator` 폴더에서 진행
-1. Config 수정
+
+### 1. Config 수정
 	- `salmonn_eval_config.yaml`과 `./config/accelerate_config.yaml` 파일을 수정해 현재 환경에 맞는 evaluate 실행
 	- 주로 `config 파일들의 path, batch_size, token` 등을 수정하면 됩니다.
 	- `sh ./config/accelerate_config.sh`를 실행해 원하는 환경에 맞느 accelerate config 파일을 쉽게 생성 가능
 	- ![[accelerate_config.png|300]]
 		- `accelerate_config.yaml` 파일의 내용으로 현재 Single GPU에 맞는 설정으로 되어 있습니다. 만약 Multi GPU를 활용해 분산 학습 및 추론을 하고 싶다면 `#Single GPU` 라인을 주석처리한 뒤 `#Multi GPU`가 적힌 라인을 주석 해제해 사용하면 기본적인 Multi GPU 활용이 가능합니다.
 
-2. Torch-TensorRT로 Compile
+### 2. Torch-TensorRT로 Compile
 ```
 python tensorrt_aot.py
 ```
@@ -90,7 +91,7 @@ python tensorrt_aot.py
 - 이후 모델은 `./trt_models`폴더에 저장되어 추후 evaluate 과정에서 사용됩니다.
 
 
-3. Evaluate
+### 3. Evaluate
 ```
 sh accelerate_eval.sh --mode {submission_mode}
 ```
@@ -101,7 +102,7 @@ sh accelerate_eval.sh --mode {submission_mode}
 - `--mode` 옵션
 	- `--mode {submission_asr/submission_aac}`로 사용
 
-4. Evaluate Efficiency
+### 4. Evaluate Efficiency
 ```
 python evaluate_efficiency_salmonn.py
 ```
