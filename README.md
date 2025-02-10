@@ -1,3 +1,68 @@
+# 📖 Overview
+![](https://i.imgur.com/SqupAoR.png)
+Bone Segmentation은 인공지능 분야에서 중요한 응용 분야 중 하나로, 특히, 딥러닝 기술을 이용한 뼈 Segmentation은 많은 연구가 이루어지고 있으며, 다양한 목적으로 도움을 줄 수 있습니다.
+
+<br>
+
+## 🗂 Dataset
+- **Input :** hand bone x-ray 객체가 담긴 이미지가 모델의 인풋으로 사용됩니다. segmentation annotation은 json file로 제공됩니다.
+- **Output :** 모델은 각 픽셀 좌표에 따른 class를 출력하고, 이를 rle로 변환하여 리턴합니다. 이를 output 양식에 맞게 csv 파일을 만들어 제출합니다.
+<br><br>
+- 전체 이미지 개수: 800장(Train), 288장(Test)
+- 크게 손가락 / 손등 / 팔로 구성되며, 총 29개의 class (뼈 종류)가 존재합니다.
+<br><br><br>
+
+## 📃 Metric
+![image](https://github.com/user-attachments/assets/f77da0ea-caf8-4e15-a592-dab7f6c331b0)
+2 * (예측 영역 ∩ 실제 영역) / (예측 영역의 크기 + 실제 영역의 크기)인 DICE score는 예측된 영역과 실제 영역 간의 중첩 정도를 수치화하여 표현합니다. 
+이 공식은 두 영역이 완전히 일치할 때 최대값인 1을 갖고, 전혀 겹치지 않을 때 최소값인 0을 갖습니다.
+
+<br><br>
+# Team CV-13
+
+## 🧑‍💻 Members 
+<table>
+    <tr height="160px">
+        <td align="center" width="150px">
+            <a href="https://github.com/boyamie"><img height="80px"  src="https://github.com/user-attachments/assets/adeaf63c-a763-46df-bd49-1a0ce71098eb"></a>
+            <br/>
+            <a href="https://github.com/boyamie"><strong>김보현</strong></a>
+            <br />
+        </td>
+        <td align="center" width="150px">
+            <a href="https://github.com/Ja2Hw"><img height="80px"  src="https://github.com/user-attachments/assets/d824f102-e0a5-491d-9c75-cb90f625da3e"/></a>
+            <br/>
+            <a href="https://github.com/Ja2Hw"><strong>김재환</strong></a>
+            <br />
+        </td>
+        <td align="center" width="150px">
+            <a href="https://github.com/Jin-SukKim"><img height="80px"  src="https://github.com/user-attachments/assets/f15196cd-96fa-404c-b418-dc84e5ced92a"/></a>
+            <br/>
+            <a href="https://github.com/Jin-SukKim"><strong>김진석</strong></a>
+            <br />
+        </td>
+        <td align="center" width="150px">
+            <a href="https://github.com/202250274"><img height="80px" src="https://github.com/user-attachments/assets/534a7596-2c95-4b89-867d-839a7728303c"/></a>
+            <br />
+            <a href="https://github.com/202250274"><strong>박진영</strong></a>
+            <br />
+        </td>
+        <td align="center" width="150px">
+            <a href="https://github.com/Superl3"><img height="80px" src="https://github.com/user-attachments/assets/3673ecc7-399b-42b0-9d94-cfcfd32d3864"/></a>
+            <br />
+            <a href="https://github.com/Superl3"><strong>성기훈</strong></a>
+            <br />
+        </td>
+        <td align="center" width="150px">
+              <a href="https://github.com/hocheol0303"><img height="80px"  src="https://github.com/user-attachments/assets/2d0a71c6-9752-43a8-b96e-bc3be06e5dde"/></a>
+              <br />
+              <a href="https://github.com/hocheol0303"><strong>양호철</strong></a>
+              <br />
+          </td>
+    </tr>
+</table>  
+
+<br><br>
 ## Train
 `./trainer` 폴더에서 진행합니다.
 
