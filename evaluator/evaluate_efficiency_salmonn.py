@@ -1,4 +1,3 @@
-
 import sys
 from pathlib import Path
 import torch
@@ -8,11 +7,13 @@ import numpy as np
 import argparse
 import gc
 import subprocess
+import torch_tensorrt
 from transformers import DynamicCache
 from tqdm import tqdm
 from custom_utils.Gsheet_Effi import Gsheet_param
 
 import os
+import torch.nn.functional as F
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -113,9 +114,11 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     llm = salmonn.llama_model
 
     batch_size = samples["spectrogram"].shape[0]
-    spectrogram = samples["spectrogram"]
+    spectrogram = samples["spectrogram"].half()
     raw_wav = samples.get("raw_wav", None)
     audio_padding_mask = samples.get("padding_mask", None)
+    
+    # https://pytorch.org/TensorRT/tutorials/_rendered_examples/dynamo/pre_allocated_output_example.html
     speech_embeds, speech_atts = salmonn.encode_speech(
         spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
     )
@@ -129,55 +132,99 @@ def model_inference(cfg, samples, test_prompt, salmonn):
         speech_embeds, speech_atts, templated_prompts, multi_prompt=True
     )
 
-    bos = (
-        torch.ones(
-            [batch_size, 1],
-            dtype=torch.int32,
-            device=speech_embeds.device,
-        )
-        * salmonn.llama_tokenizer.bos_token_id
-    )
-    bos_embeds = (
-        llm.model.embed_tokens(bos)
-        if not salmonn.lora
-        else llm.model.model.embed_tokens(bos)
-    )
+    bos = torch.ones(
+        [batch_size, 1],
+        dtype=torch.int32,
+        device=speech_embeds.device,
+    ) * salmonn.llama_tokenizer.bos_token_id
+    
+    bos_embeds = salmonn.embed_tokens(bos)
     atts_bos = speech_atts[:, :1]
 
     speech_embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
     speech_atts = torch.cat([atts_bos, speech_atts], dim=1)
-
-    outputs = llm.model(
+    
+    outputs = llm(
         inputs_embeds=speech_embeds,
         attention_mask=speech_atts,
     )
     end_time = time.time()
     ttft = end_time - start_time
 
-    next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1).unsqueeze(1)
-    past_key_values = DynamicCache.from_legacy_cache(outputs.past_key_values)
-
-    # TPOT
+    # TensorRT 모델은 logits만 반환
+    logits = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
+    next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(1)
+    # TPOT - input_ids를 input_embeds로 변환
     start_time = time.time()
     with torch.no_grad():
-        _ = llm.model(next_token, past_key_values=past_key_values, use_cache=True)
+        next_embeds = salmonn.embed_tokens(next_token)  # [B, S, H]
+        batch_size, seq_len, hidden_size = next_embeds.shape
+        
+        # 패딩 크기를 동적으로 계산
+        target_len = 111  # 목표 시퀀스 길이
+        pad_len = target_len - seq_len
+        padded_embeds = F.pad(next_embeds, (0, 0, 0, pad_len, 0, 0))  # [B, 111, H]
+        
+        # 어텐션 마스크도 배치 크기에 맞게 생성
+        attention_mask = torch.ones([batch_size, target_len], dtype=torch.bool, device=next_token.device)
+        attention_mask[:, seq_len:] = False  # 패딩된 부분만 마스크
+        
+        _ = llm(
+            inputs_embeds=padded_embeds,
+            attention_mask=attention_mask
+        )
     end_time = time.time()
     tpot = end_time - start_time
 
     inference_time = ttft + tpot
     return inference_time, ttft, tpot
 
+def load_aot_models(config):
+    
+    # 모델 로드 전에 디렉토리 확인
+    if not os.path.exists("./trt_models"):
+        raise FileNotFoundError("TensorRT models directory not found. Please run tensorrt_aot.py first.")
+        
+    try:
+        speech_path = f"./trt_models/speech_trt_batch{config.batch_size_eval}.ep"
+        llm_path = f"./trt_models/llm_trt_batch{config.batch_size_eval}.ts"
+        
+        speech_encoder = torch_tensorrt.load(speech_path).module()
+        llm = torch.jit.load(llm_path).cuda()
+        
+        return speech_encoder, llm
+    except Exception as e:
+        print(f"Error loading TensorRT models: {e}")
+        raise e
 
 def main(args):
+    # Config 객체 생성 전에 CUDA 디바이스 설정
+    torch.cuda.set_device(int(args.device.split(':')[1]))
+    print(f"Current CUDA device: {torch.cuda.current_device()}")
+    
     cfg = Config(args)
-
     print("Force batch size as 1")
     cfg.config.run.batch_size_eval = 1
+    
+    # Runtime 설정을 모델 로드 전에 먼저 수행
+    torch_tensorrt.runtime.set_multi_device_safe_mode(True)
+    # torch_tensorrt.runtime.set_cudagraphs_mode(True) # 메모리를 더 사용할 수도?
 
     # Load model
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, _ = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
+    salmonn_preprocessor.eval()
+    
+    if cfg.config.run.tensorrt:
+        speech_encoder, trt_llm = load_aot_models(cfg.config.run)
+        
+        # 새로운 모델 할당
+        salmonn_preprocessor.speech_encoder = speech_encoder
+        salmonn_preprocessor.llama_model.forward = trt_llm.forward
+        
+        del trt_llm, speech_encoder
+        torch.cuda.empty_cache()
 
     # Load dataset
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
@@ -193,15 +240,15 @@ def main(args):
     tpots = []
 
     for it in tqdm(range(args.num_it + args.num_warmup)):
-        torch.cuda.synchronize()
-        with torch.no_grad():
+        torch.cuda.synchronize()  # 이전 반복의 모든 CUDA 연산 완료 대기
+        
+        with torch.inference_mode(), torch_tensorrt.runtime.enable_cudagraphs(), torch.cuda.amp.autocast():
             inference_time, ttft, tpot = model_inference(
                 cfg,
                 sample_batch,
                 test_prompt,
                 salmonn_preprocessor,
             )
-        torch.cuda.synchronize()
         after_memory_allocated = torch.cuda.max_memory_allocated()
 
         torch.cuda.empty_cache()  # Clear the cache to get more accurate measurements
