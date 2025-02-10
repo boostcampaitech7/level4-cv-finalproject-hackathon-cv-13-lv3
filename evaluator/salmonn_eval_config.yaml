@@ -15,8 +15,9 @@ project_name : 'Salmonn'
 
 model:
   # paths
-  llama_path: "meta-llama/Llama-3.2-3B-Instruct" # "unsloth/gemma-2b-bnb-4bit" #"lmsys/vicuna-13b-v1.1"
-  whisper_path: "openai/whisper-large-v3-turbo" #"openai/whisper-large-v2"
+  liger_kernel: False
+  llama_path: "meta-llama/Llama-3.2-3B-Instruct"
+  whisper_path: "openai/whisper-large-v3-turbo"
   beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
   #Ced_path: "/data/dataset/pretrained/audiotransformer_base_mAP_4999.pt"
 
@@ -24,8 +25,6 @@ model:
   only_preprocessor: False
 
   ckpt: "/data/kjh/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/0206-llama-whisperv3turbo-BEATs-aug_Pitch/checkpoint_best.pth"
-  #"/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-Gemma-2-2b-it-whisper-small-5epoch/checkpoint_best.pth"
-
   freeze_whisper: True
   freeze_beats: True
 
@@ -73,8 +72,8 @@ datasets:
 
 run:
   seed: 42
-  batch_size_eval: 32
-  num_workers: 32
+  batch_size_eval: 16
+  num_workers: 16
   device: "cuda"
   world-size: 2
   dist_url: "env://"

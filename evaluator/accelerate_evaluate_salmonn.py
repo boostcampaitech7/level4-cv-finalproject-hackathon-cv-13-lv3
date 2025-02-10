@@ -146,7 +146,7 @@ def main():
                 device=speech_embeds.device,
             ) * tokenizer.bos_token_id
 
-            bos_embeds = llama_model.module.base_model.model.model.embed_tokens(bos)
+            bos_embeds = llama_model.base_model.model.model.embed_tokens(bos)
             atts_bos = speech_atts[:, :1]
           
             embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
@@ -155,9 +155,9 @@ def main():
             generate_cfg = cfg.config.generate
         
             with accelerator.autocast():
-                outputs = llama_model.module.generate(
+                outputs = llama_model.generate(
                     inputs_embeds=embeds,
-                    pad_token_id=llama_model.module.config.eos_token_id[0],
+                    pad_token_id=llama_model.config.eos_token_id[0],
                     max_new_tokens=generate_cfg.get("max_new_tokens", 200),
                     num_beams=generate_cfg.get("num_beams", 4),
                     do_sample=generate_cfg.get("do_sample", True),

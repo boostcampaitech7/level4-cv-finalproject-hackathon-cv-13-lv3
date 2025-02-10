@@ -11,7 +11,7 @@ accelerate launch --config_file ./configs/accelerate_config.yaml \
     --mode "$MODE1" \
     --cfg-path salmonn_eval_config.yaml
 
-# accelerate launch --config_file ./configs/accelerate_config.yaml \
-#     accelerate_evaluate_salmonn.py \
-#     --mode "$MODE2" \
-#     --cfg-path salmonn_eval_config.yaml
+accelerate launch --config_file ./configs/accelerate_config.yaml \
+    accelerate_evaluate_salmonn.py \
+    --mode "$MODE2" \
+    --cfg-path salmonn_eval_config.yaml
