@@ -68,7 +68,7 @@ Stage1과 Stage2로 나눠서 학습하는 방식을 사용합니다.
 ```
 sh accelerate_train.sh --cfg-path {train_config_path}
 ```
-
+<br>
 ## Evaluate
 `./evaluator` 폴더에서 진행
 1. Config 수정
@@ -87,6 +87,7 @@ python tensorrt_aot.py
 - evalute_efficiency로 메모리 사용량과 latency를 측정할 때는 `batch_size_eval`을 무조건 `1`로 설정해 `python tensorrt_aot.py`를 실행해야 됩니다.
 	- `salmonn_eval_config.yaml`에서 `batch_szie_eval=1` 설정
 - 이후 모델은 `./trt_models`폴더에 저장되어 추후 evaluate 과정에서 사용됩니다.
+
 
 3. Evaluate
 ```
