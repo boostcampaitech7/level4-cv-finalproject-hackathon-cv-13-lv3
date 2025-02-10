@@ -51,7 +51,9 @@ Audio adapter의 결합 및 사전학습을 통해, 언어모델은 음성/음�
 </table>  
 
 <br><br>
+
 # Guide
+
 ## Train
 `./trainer` 폴더에서 진행합니다.
 
@@ -70,6 +72,7 @@ Stage1과 Stage2로 나눠서 학습하는 방식을 사용합니다.
 sh accelerate_train.sh --cfg-path {train_config_path}
 ```
 <br>
+
 ## Evaluate
 `./evaluator` 폴더에서 진행
 
