@@ -22,6 +22,7 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
+from functorch.experimental.control_flow import cond
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache, EncoderDecoderCache, StaticCache
@@ -631,12 +632,9 @@ class WhisperEncoderLayer(nn.Module):
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
 
-        if hidden_states.dtype == torch.float16 and (
-            torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any()
-        ):
-            clamp_value = torch.finfo(hidden_states.dtype).max - 1000
-            hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
-
+        # dynamic하게 변환하는걸 제거하고 항상 clamp 적용
+        clamp_value = torch.finfo(hidden_states.dtype).max - 1000
+        hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
         outputs = (hidden_states,)
 
         if output_attentions:

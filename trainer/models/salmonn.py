@@ -154,6 +154,8 @@ class SALMONN(nn.Module):
 
             # LLM 모델의 Token Embedding 크기를 Tokenizer의 어휘 크기에 맞게 조정   
             self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
+            
+            # Freeze LLaMA parameters
             for name, param in self.llama_model.named_parameters():
                 param.requires_grad = False # LLM Freeze
             logging.info('Loading LLaMA Done')
@@ -172,7 +174,10 @@ class SALMONN(nn.Module):
                 self.llama_model = get_peft_model(self.llama_model, self.peft_config)
                 self.llama_model.print_trainable_parameters()
                 logging.info('LoRA Training')
-        
+            
+            # Set embed_tokens 
+            self.embed_tokens = self.llama_model.get_input_embeddings()
+            
         # Whisper 모델 로드
         assert whisper_path
         logging.info('Loading Whisper Model')
@@ -374,7 +379,14 @@ class SALMONN(nn.Module):
 
     def encode_speech(self, spectrogram, raw_wav=None, audio_padding_mask=None):
         with self.maybe_autocast():
-            speech_embeds = self.speech_encoder(spectrogram, return_dict=True).last_hidden_state
+            outputs = self.speech_encoder(spectrogram)
+            
+            if isinstance(outputs, tuple):
+                speech_embeds = outputs[0]
+            elif isinstance(outputs, torch.Tensor):
+                speech_embeds = outputs
+            else:
+                speech_embeds = outputs.last_hidden_state
 
             if self.beats_path and raw_wav is not None:
                 audio_embeds, _ = self.beats.extract_features(raw_wav, padding_mask=audio_padding_mask, feature_only=True)
@@ -401,13 +413,13 @@ class SALMONN(nn.Module):
                 p_before_tokens = self.llama_tokenizer(
                     p_before, return_tensors="pt", add_special_tokens=False
                 ).to(embeds.device)
-                p_before_embeds = self.llama_model.model.embed_tokens(p_before_tokens.input_ids) if not self.lora else self.llama_model.model.model.embed_tokens(p_before_tokens.input_ids)
+                p_before_embeds = self.embed_tokens(p_before_tokens.input_ids)
 
                 # speech_embeds wrapped with prompts_embeds are padded to the same length here
                 p_after_tokens = self.llama_tokenizer(
                     p_after, return_tensors="pt", padding="longest", add_special_tokens=False
                 ).to(embeds.device)
-                p_after_embeds = self.llama_model.model.embed_tokens(p_after_tokens.input_ids) if not self.lora else self.llama_model.model.model.embed_tokens(p_after_tokens.input_ids)
+                p_after_embeds = self.embed_tokens(p_after_tokens.input_ids)
 
                 wrapped_embeds = torch.cat([p_before_embeds, embeds, p_after_embeds], dim=1)
                 wrapped_atts = torch.cat([p_before_tokens.attention_mask, atts, p_after_tokens.attention_mask], dim=1)
@@ -421,8 +433,8 @@ class SALMONN(nn.Module):
                 p_after_tokens = self.llama_tokenizer(
                     p_after, return_tensors="pt", add_special_tokens=False
                 ).to(embeds.device)
-                p_before_embeds = self.llama_model.model.embed_tokens(p_before_tokens.input_ids).expand(batch_size, -1, -1) if not self.lora else self.llama_model.model.model.embed_tokens(p_before_tokens.input_ids).expand(batch_size, -1, -1)
-                p_after_embeds = self.llama_model.model.embed_tokens(p_after_tokens.input_ids).expand(batch_size, -1, -1) if not self.lora else self.llama_model.model.model.embed_tokens(p_after_tokens.input_ids).expand(batch_size, -1, -1)
+                p_before_embeds = self.embed_tokens(p_before_tokens.input_ids).expand(batch_size, -1, -1)
+                p_after_embeds = self.embed_tokens(p_after_tokens.input_ids).expand(batch_size, -1, -1)
 
                 wrapped_embeds = torch.cat([p_before_embeds, embeds, p_after_embeds], dim=1)
                 wrapped_atts = torch.cat([p_before_tokens.attention_mask, atts, p_after_tokens.attention_mask], dim=1)
@@ -472,7 +484,7 @@ class SALMONN(nn.Module):
             max_length=self.max_txt_len,
             add_special_tokens=False
         ).to(spectrogram.device)
-        to_regress_embeds = self.llama_model.model.embed_tokens(to_regress_tokens.input_ids) if not self.lora else self.llama_model.model.model.embed_tokens(to_regress_tokens.input_ids)
+        to_regress_embeds = self.embed_tokens(to_regress_tokens.input_ids)
         targets = to_regress_tokens.input_ids.masked_fill(
             to_regress_tokens.input_ids == self.llama_tokenizer.pad_token_id, -100
         )
@@ -490,7 +502,7 @@ class SALMONN(nn.Module):
             dtype=to_regress_tokens.input_ids.dtype,
             device=to_regress_tokens.input_ids.device,
         ) * self.llama_tokenizer.bos_token_id
-        bos_embeds = self.llama_model.model.embed_tokens(bos) if not self.lora else self.llama_model.model.model.embed_tokens(bos)
+        bos_embeds = self.embed_tokens(bos)
         atts_bos = speech_atts[:, :1]
 
         inputs_embeds = torch.cat([bos_embeds, speech_embeds, to_regress_embeds], dim=1)
@@ -537,7 +549,7 @@ class SALMONN(nn.Module):
             dtype=torch.int32,
             device=speech_embeds.device,
         ) * self.llama_tokenizer.bos_token_id
-        bos_embeds = self.llama_model.model.embed_tokens(bos) if not self.lora else self.llama_model.model.model.embed_tokens(bos)
+        bos_embeds = self.embed_tokens(bos)
         atts_bos = speech_atts[:, :1]
 
         embeds = torch.cat([bos_embeds, speech_embeds], dim=1)

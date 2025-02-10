@@ -9,6 +9,7 @@ from pathlib import Path
 
 # Third-party imports
 import torch
+import torch_tensorrt
 import pandas as pd
 from tqdm import tqdm
 from accelerate import Accelerator
@@ -69,6 +70,23 @@ def replace_test_ann_path(cfg, task):
             cfg.config.datasets.test_ann_path = cfg.config.datasets.test_ann_path_aac
     return cfg
 
+def load_aot_models(config):
+    
+    # 모델 로드 전에 디렉토리 확인
+    if not os.path.exists("./trt_models"):
+        raise FileNotFoundError("TensorRT models directory not found. Please run tensorrt_aot.py first.")
+        
+    try:
+        speech_path = f"./trt_models/speech_trt_batch{config.batch_size_eval}.ep"
+        llm_path = f"./trt_models/llm_trt_batch{config.batch_size_eval}.ts"
+        
+        speech_encoder = torch_tensorrt.load(speech_path).module()
+        llm = torch.jit.load(llm_path).cuda()
+        
+        return speech_encoder, llm
+    except Exception as e:
+        print(f"Error loading TensorRT models: {e}")
+        raise e
 
 def main():
     args = parse_args()
@@ -80,36 +98,40 @@ def main():
     # Accelerator 초기화
     accelerator = Accelerator()
     
+    # Runtime 설정
+    torch_tensorrt.runtime.set_multi_device_safe_mode(True)
+    # torch_tensorrt.runtime.set_cudagraphs_mode(True)  # 런타임 CUDA 그래프만 비활성화 (Single GPU 모드에서 사용?)
+    
     # Load models
     salmonn_preprocessor = load_preprocessor(cfg)
     llama_model, tokenizer = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
-    
-    
-    # Set models to eval mode
     salmonn_preprocessor.eval()
     
+    if cfg.config.run.tensorrt:
+        speech_encoder, trt_llm = load_aot_models(cfg.config.run)
+            
+        # 새로운 모델 할당
+        salmonn_preprocessor.speech_encoder = speech_encoder
+
+        salmonn_preprocessor.llama_model.forward = trt_llm.forward
+        
+        del trt_llm, speech_encoder
+        torch.cuda.empty_cache()
+        
     # Load data
     dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
     
     # Prepare with accelerator
-    encode_speech, prompt_wrap, tokenizer, llama_model, dataloader = accelerator.prepare(
-        salmonn_preprocessor.encode_speech, salmonn_preprocessor.prompt_wrap, tokenizer, salmonn_preprocessor.llama_model, dataloader
+    encode_speech, prompt_wrap, tokenizer, embed_tokens, llama_model, dataloader = accelerator.prepare(
+        salmonn_preprocessor.encode_speech, 
+        salmonn_preprocessor.prompt_wrap, 
+        tokenizer, 
+        salmonn_preprocessor.embed_tokens, 
+        salmonn_preprocessor.llama_model, 
+        dataloader
     )
-
-    # # Debugging output
-    # print(f"Type of llama_model: {type(llama_model)}")
-    # print(f"Has 'module' attribute: {hasattr(llama_model, 'module')}")
-    # if hasattr(llama_model, 'module'):
-    #     print(f"Type of llama_model.module: {type(llama_model.module)}")
-    #     print(f"Type of llama_model.module.config: {type(llama_model.module.config)}")
-    #     print(f"Type of llama_model.module.config.eos_token_id: {type(llama_model.module.config.eos_token_id)}")
-    #     print(f"Type of llama_model.module.config.eos_token_id[0]: {type(llama_model.module.config.eos_token_id[0])}")
-    #     print(f"Type of llama_model.module.module.embed_tokens: {type(llama_model.module.base_model.model.model.embed_tokens)}")
-    # print(f"Has 'model' attribute: {hasattr(llama_model, 'model')}")
-    # if hasattr(llama_model, 'model'):
-    #     print(f"Type of llama_model.model: {type(llama_model.model)}")
-
+    
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)
 
@@ -119,42 +141,42 @@ def main():
         local_hyps = []
         local_refs = []
         
-        for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
-            # Preprocess
-            batch_size = samples["spectrogram"].shape[0]
-            spectrogram = samples["spectrogram"]
-            raw_wav = samples.get("raw_wav", None)
-            audio_padding_mask = samples.get("padding_mask", None)
-          
-            # Encode speech
-            with accelerator.autocast():    
+        # autocast를 loop 시작 전에 한 번만 적용
+        with torch.inference_mode(), accelerator.autocast():
+            for samples in tqdm(dataloader, disable=not accelerator.is_local_main_process):
+                # Preprocess
+                batch_size = samples["spectrogram"].shape[0]
+                spectrogram = samples["spectrogram"].half()
+                raw_wav = samples.get("raw_wav", None)
+                audio_padding_mask = samples.get("padding_mask", None)
+            
+                # Encode speech
                 speech_embeds, speech_atts = encode_speech(
                     spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
                 )
-          
-            # Add prompt embeds + audio embed 
-            prompts = [test_prompt[task] for task in samples['task']]
-            templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
+            
+                # Add prompt embeds + audio embed 
+                prompts = [test_prompt[task] for task in samples['task']]
+                templated_prompts = [cfg.config.model.prompt_template.format(prompt) for prompt in prompts]
 
-            speech_embeds, speech_atts = prompt_wrap(
-                speech_embeds, speech_atts, templated_prompts, multi_prompt=True
-            )
+                speech_embeds, speech_atts = prompt_wrap(
+                    speech_embeds, speech_atts, templated_prompts, multi_prompt=True
+                )
 
-            bos = torch.ones(
-                [batch_size, 1],
-                dtype=torch.int32,
-                device=speech_embeds.device,
-            ) * tokenizer.bos_token_id
+                bos = torch.ones(
+                    [batch_size, 1],
+                    dtype=torch.int32,
+                    device=speech_embeds.device,
+                ) * tokenizer.bos_token_id
 
-            bos_embeds = llama_model.base_model.model.model.embed_tokens(bos)
-            atts_bos = speech_atts[:, :1]
-          
-            embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
-            attns = torch.cat([atts_bos, speech_atts], dim=1)
+                bos_embeds = embed_tokens(bos)
+                atts_bos = speech_atts[:, :1]
+            
+                embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
+                attns = torch.cat([atts_bos, speech_atts], dim=1)
 
-            generate_cfg = cfg.config.generate
-        
-            with accelerator.autocast():
+                generate_cfg = cfg.config.generate
+            
                 outputs = llama_model.generate(
                     inputs_embeds=embeds,
                     pad_token_id=llama_model.config.eos_token_id[0],
@@ -169,14 +191,14 @@ def main():
                     attention_mask=attns,
                 )
 
-            # 로컬에 결과 저장 (gather 없이)
-            decoded_results = tokenizer.batch_decode(outputs)
-            local_hyps.extend([result.split(generate_cfg.end_sym)[0].lower() for result in decoded_results])
-            local_testset_ids.extend(samples["testset_id"])
-            
-            if not args.make_submission:
-                local_refs.extend(samples["text"])
-    
+                # 로컬에 결과 저장 (gather 없이)
+                decoded_results = tokenizer.batch_decode(outputs)
+                local_hyps.extend([result.split(generate_cfg.end_sym)[0].lower() for result in decoded_results])
+                local_testset_ids.extend(samples["testset_id"])
+                
+                if not args.make_submission:
+                    local_refs.extend(samples["text"])
+        
         # 모든 프로세스의 처리가 끝난 후 한번에 gather
         accelerator.wait_for_everyone()
         
@@ -223,3 +245,4 @@ def main():
 if __name__ == '__main__':
     random.seed(42)
     main()
+
