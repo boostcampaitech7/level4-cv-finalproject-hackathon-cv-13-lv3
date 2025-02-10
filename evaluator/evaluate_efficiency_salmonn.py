@@ -119,10 +119,9 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     audio_padding_mask = samples.get("padding_mask", None)
     
     # https://pytorch.org/TensorRT/tutorials/_rendered_examples/dynamo/pre_allocated_output_example.html
-    with torch_tensorrt.runtime.enable_pre_allocated_outputs(salmonn.speech_encoder):
-        speech_embeds, speech_atts = salmonn.encode_speech(
-            spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
-        )
+    speech_embeds, speech_atts = salmonn.encode_speech(
+        spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
+    )
 
     prompts = [test_prompt[task] for task in samples["task"]]
     templated_prompts = [
@@ -145,11 +144,10 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     speech_embeds = torch.cat([bos_embeds, speech_embeds], dim=1)
     speech_atts = torch.cat([atts_bos, speech_atts], dim=1)
     
-    with torch_tensorrt.runtime.enable_pre_allocated_outputs(llm): # GPU Resource를 더 효과적으로 사용할 수 있다고 함
-        outputs = llm(
-            inputs_embeds=speech_embeds,
-            attention_mask=speech_atts,
-        )
+    outputs = llm(
+        inputs_embeds=speech_embeds,
+        attention_mask=speech_atts,
+    )
     end_time = time.time()
     ttft = end_time - start_time
 
@@ -158,7 +156,7 @@ def model_inference(cfg, samples, test_prompt, salmonn):
     next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(1)
     # TPOT - input_ids를 input_embeds로 변환
     start_time = time.time()
-    with torch.no_grad(), torch_tensorrt.runtime.enable_pre_allocated_outputs(llm):
+    with torch.no_grad():
         next_embeds = salmonn.embed_tokens(next_token)  # [B, S, H]
         batch_size, seq_len, hidden_size = next_embeds.shape
         
@@ -217,7 +215,7 @@ def main(args):
     llama_model, _ = load_model(salmonn_preprocessor)
     salmonn_preprocessor.llama_model = llama_model
     salmonn_preprocessor.eval()
-
+    
     if cfg.config.run.tensorrt:
         speech_encoder, trt_llm = load_aot_models(cfg.config.run)
         
@@ -244,8 +242,7 @@ def main(args):
     for it in tqdm(range(args.num_it + args.num_warmup)):
         torch.cuda.synchronize()  # 이전 반복의 모든 CUDA 연산 완료 대기
         
-        # with torch.inference_mode(), torch_tensorrt.runtime.enable_cudagraphs(), torch.cuda.amp.autocast():
-        with torch.inference_mode(), torch.cuda.amp.autocast():
+        with torch.inference_mode(), torch_tensorrt.runtime.enable_cudagraphs(), torch.cuda.amp.autocast():
             inference_time, ttft, tpot = model_inference(
                 cfg,
                 sample_batch,

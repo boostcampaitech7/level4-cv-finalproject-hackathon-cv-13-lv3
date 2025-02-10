@@ -110,9 +110,10 @@ def main():
     
     if cfg.config.run.tensorrt:
         speech_encoder, trt_llm = load_aot_models(cfg.config.run)
-        
+            
         # 새로운 모델 할당
         salmonn_preprocessor.speech_encoder = speech_encoder
+
         salmonn_preprocessor.llama_model.forward = trt_llm.forward
         
         del trt_llm, speech_encoder
@@ -123,9 +124,14 @@ def main():
     
     # Prepare with accelerator
     encode_speech, prompt_wrap, tokenizer, embed_tokens, llama_model, dataloader = accelerator.prepare(
-        salmonn_preprocessor.encode_speech, salmonn_preprocessor.prompt_wrap, tokenizer, salmonn_preprocessor.embed_tokens, salmonn_preprocessor.llama_model, dataloader
+        salmonn_preprocessor.encode_speech, 
+        salmonn_preprocessor.prompt_wrap, 
+        tokenizer, 
+        salmonn_preprocessor.embed_tokens, 
+        salmonn_preprocessor.llama_model, 
+        dataloader
     )
-
+    
     with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
         test_prompt = json.load(f)
 
@@ -171,9 +177,9 @@ def main():
 
                 generate_cfg = cfg.config.generate
             
-                outputs = llama_model.module.generate(
+                outputs = llama_model.generate(
                     inputs_embeds=embeds,
-                    pad_token_id=llama_model.module.config.eos_token_id[0],
+                    pad_token_id=llama_model.config.eos_token_id[0],
                     max_new_tokens=generate_cfg.get("max_new_tokens", 200),
                     num_beams=generate_cfg.get("num_beams", 4),
                     do_sample=generate_cfg.get("do_sample", True),

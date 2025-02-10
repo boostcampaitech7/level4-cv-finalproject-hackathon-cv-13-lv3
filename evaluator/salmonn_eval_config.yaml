@@ -23,7 +23,7 @@ model:
   token: "" # Use hf token to access gated repositories
   only_preprocessor: False
 
-  ckpt: "/data/kjh/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/Final_outputs_stage2/202502090153/checkpoint_best.pth"
+  ckpt: "/data/kjh/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/Final_outputs_stage3/202502100219/checkpoint_best.pth"
   #"/data/jyp/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/Salmonn-Gemma-2-2b-it-whisper-small-5epoch/checkpoint_best.pth"
 
   freeze_whisper: True
@@ -74,12 +74,12 @@ datasets:
   
 run:
   seed: 42
-  batch_size_eval: 8
-  num_workers: 8
+  batch_size_eval: 1
+  num_workers: 1
   device: "cuda"
   world-size: 2
   dist_url: "env://"
   distributed: True
   tensorrt: True
   optimization_level: 3
-  tensorrt_device: "cuda:0"
+  tensorrt_device: "cuda:1"

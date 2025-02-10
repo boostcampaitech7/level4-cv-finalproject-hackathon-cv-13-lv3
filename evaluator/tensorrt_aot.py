@@ -22,7 +22,7 @@ from torch.export import export
 sys.path.append(str(Path(__file__).parent / "audiolm-trainer"))
 
 # Custom modules
-from salmonn_utils import SALMONNTestDataset, load_preprocessor, load_model
+from salmonn_utils import load_preprocessor, load_model
 from dataset import SALMONNDataset
 from config import Config
 from utils import get_accelerator_dataloader
@@ -33,7 +33,7 @@ class LLMWrapper(nn.Module):
     def __init__(self, model):
         super(LLMWrapper, self).__init__()
         self.model = model
-        
+
     def forward(
         self,
         inputs_embeds = None,
@@ -60,7 +60,7 @@ class LLMWrapper(nn.Module):
             return_dict=False
         )
         return outputs
-    
+
     @torch.jit.export
     def generate(
         self,
@@ -94,39 +94,43 @@ class LLMWrapper(nn.Module):
     def base_model(self):
         return self.model
     
-class CalibrationDataloader:
-    def __init__(self, salmonn, dataloader, cfg, max_samples=30):
-        self.dataloader = dataloader
+class CalibrationDataloader(torch.utils.data.DataLoader):
+    def __init__(self, salmonn, dataloader, cfg):
+        self.dataloader = iter(dataloader)
         self.salmonn = salmonn
         self.cfg = cfg
-        self.max_samples = max_samples
-        self.current = 0
+        self.max_samples = 30
+        self.device = torch.device(cfg.config.run.tensorrt_device)
+        self.batch_size = cfg.config.run.batch_size_eval
+        self.persistent_workers = True
         
         # test_prompt 로드
         with open("audiolm-trainer/prompts/test_prompt.json", "r") as f:
             self.test_prompt = json.load(f)
-    
-    def __len__(self):
-        return self.max_samples
-        
-    def __iter__(self):
-        return self
-        
-    def __next__(self):
-        if self.current >= self.max_samples:
-            raise StopIteration
-        
-        samples = next(self.dataloader)
-        self.current += 1
-        
+            
+        # 미리 데이터 준비
+        with torch.no_grad():
+            for _ in range(self.max_samples):
+                try:
+                    samples = next(self.dataloader)
+                    processed = self._process_sample(samples)
+                    self.samples.append(processed)
+                except StopIteration:
+                    break
+                
+    def _process_sample(self, samples):
         # evaluate_efficiency_salmonn.py의 model_inference 함수와 동일한 전처리
         batch_size = samples["spectrogram"].shape[0]
-        spectrogram = samples["spectrogram"]
+        # float16으로 변환하고 디바이스로 이동
+        spectrogram = samples["spectrogram"].to(dtype=torch.float16, device=self.device)
         raw_wav = samples.get("raw_wav", None)
+        if raw_wav is not None:
+            raw_wav = raw_wav.to(self.device)
         audio_padding_mask = samples.get("padding_mask", None)
+        if audio_padding_mask is not None:
+            audio_padding_mask = audio_padding_mask.to(self.device)
         
-        # Speech encoding
-        with torch.inference_mode(), torch.cuda.amp.autocast():
+        with torch.inference_mode(), torch.amp.autocast('cuda'):
             speech_embeds, speech_atts = self.salmonn.encode_speech(
                 spectrogram, raw_wav=raw_wav, audio_padding_mask=audio_padding_mask
             )
@@ -154,7 +158,12 @@ class CalibrationDataloader:
         speech_atts = torch.cat([atts_bos, speech_atts], dim=1)
         
         return [speech_embeds, speech_atts]
-
+            
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        return self.samples[idx]
 
 def parse_args():
     parser = argparse.ArgumentParser(description='SALMONN Evaluation Script')
@@ -173,7 +182,7 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def get_dataset(dataset_cfg, run_cfg, task):
+def get_dataset(dataset_cfg, run_cfg):
     dataset = SALMONNDataset(
         dataset_cfg.prefix, 
         dataset_cfg.valid_ann_path, 
@@ -216,9 +225,9 @@ def save_speech_encoder_trt(speech_encoder, config):
         enabled_precisions={torch.float16, torch.float32},  # float32도 사용
         optimization_level=config.optimization_level,
         use_explicit_typing=True,
-        strict_types=False,
+        strict_types=True,
         device=torch.device(config.tensorrt_device),
-        debug=True, # 프로덕션 환경에서는 False로 설정
+        debug=False, # 프로덕션 환경에서는 False로 설정
         # 추가 옵션
         truncate_long_and_double=True,
         require_full_compilation=True,
@@ -243,10 +252,12 @@ def save_llm_trt(llm, config):
         llm = llm.merge_and_unload()
 
     llm.config.use_cache = False
-
+    # validate_model_kwargs 메소드를 무효화
+    llm._validate_model_kwargs = lambda x: None
+    
     # Wrap the model
     llm = LLMWrapper(llm)
-    llm.eval().cuda()
+    llm = llm.eval().cuda()
 
     seq_len = 111
     hidden_size = 3072
@@ -273,12 +284,11 @@ def save_llm_trt(llm, config):
         enabled_precisions={torch.float16, torch.float32}, # float32도 사용
         optimization_level=config.optimization_level,
         use_explicit_typing=True,
-        strict_types=False,
+        strict_types=True,
         device=torch.device(config.tensorrt_device),
-        debug=True, # 프로덕션 환경에서는 False로 설정
+        debug=False, # 프로덕션 환경에서는 False로 설정
         # 추가 옵션
         truncate_long_and_double=True,
-        require_full_compilation=True
         # use_fast_partitioner=False # 더 빠른 추론이 가능해지나 compile이 더 오래걸림
     )
 
@@ -296,12 +306,16 @@ def save_llm_trt(llm, config):
         output_format="torchscript"
     )
 
+
     del llm
     torch.cuda.empty_cache()
 
 
-def save_ptq_llm(llm, dataloader, config):
+def save_ptq_llm(salmonn, dataloader, config):
     torch.cuda.empty_cache()
+    batch_size = config.config.run.batch_size_eval
+    tensorrt_device = config.config.run.tensorrt_device
+    llm = salmonn.llama_model
     if hasattr(llm, "merge_and_unload"):
         llm = llm.merge_and_unload()
 
@@ -316,24 +330,27 @@ def save_ptq_llm(llm, dataloader, config):
 
     compile_inputs = [
         torch_tensorrt.Input(
-            shape=[config.batch_size_eval, seq_len, hidden_size],
+            shape=[batch_size, seq_len, hidden_size],
             dtype=torch.float16,
-            device=torch.device(config.tensorrt_device)
+            device=torch.device(tensorrt_device)
         ),
         torch_tensorrt.Input(
-            shape=[config.batch_size_eval, seq_len],
+            shape=[batch_size, seq_len],
             dtype=torch.bool,
-            device=torch.device(config.tensorrt_device),
+            device=torch.device(tensorrt_device),
             optional=True
         )
     ]
     
-    calibrator = torch_tensorrt.ptq.DataLoaderCalibrator(
-        dataloader,
+    # 캘리브레이션 데이터셋 생성
+    calibration_dataloader = CalibrationDataloader(salmonn, dataloader, config)
+    
+    calibrator = torch_tensorrt.ts.ptq.DataLoaderCalibrator(
+        calibration_dataloader,
         cache_file="./calibration.cache",
         use_cache=False,
-        algo_type=torch_tensorrt.ptq.CalibrationAlgo.ENTROPY_CALIBRATION_2,
-        device=torch.device(config.tensorrt_device)
+        algo_type=torch_tensorrt.ts.ptq.CalibrationAlgo.ENTROPY_CALIBRATION_2,
+        device=torch.device(tensorrt_device)
     )
     
     # TensorRT 컴파일 설정에 양자화 관련 파라미터 추가
@@ -344,25 +361,24 @@ def save_ptq_llm(llm, dataloader, config):
         enabled_precisions={torch.int8, torch.float16, torch.float32},  # int8 추가
         optimization_level=config.optimization_level,
         use_explicit_typing=True,
-        strict_types=False,
-        device=torch.device(config.tensorrt_device),
-        debug=True, # 프로덕션 환경에서는 False로 설정
+        strict_types=True,
+        device=torch.device(tensorrt_device),
+        debug=False, # 프로덕션 환경에서는 False로 설정
         # 추가 옵션
         calibrator=calibrator,
         truncate_long_and_double=True,
-        require_full_compilation=True
         # use_fast_partitioner=False # 더 빠른 추론이 가능해지나 compile이 더 오래걸림
     )
 
     # 실제 저장용 입력 생성
     inputs = [
-        torch.randn(config.batch_size_eval, seq_len, hidden_size, dtype=torch.float16, device=torch.device(config.tensorrt_device)),
-        torch.ones(config.batch_size_eval, seq_len, dtype=torch.bool, device=torch.device(config.tensorrt_device))
+        torch.randn(batch_size, seq_len, hidden_size, dtype=torch.float16, device=torch.device(tensorrt_device)),
+        torch.ones(batch_size, seq_len, dtype=torch.bool, device=torch.device(tensorrt_device))
     ]
 
     torch_tensorrt.save(
         llm, 
-        f"./trt_models/llm_ptq_trt_batch{config.batch_size_eval}.ts", 
+        f"./trt_models/llm_ptq_trt_batch{batch_size}.ts", 
         inputs=inputs,
         output_format="torchscript"
     )
@@ -372,7 +388,7 @@ def save_ptq_llm(llm, dataloader, config):
 
 def save_aot_models(speech_encoder, llm, config):
     try:
-        save_speech_encoder_trt(speech_encoder, config)
+        # save_speech_encoder_trt(speech_encoder, config)
         save_llm_trt(llm, config)
     except Exception as e:
         print(f"Failed to save TensorRT models: {e}")
@@ -383,7 +399,8 @@ def main(args):
     cfg = Config(args)
     torch.cuda.set_device(int(cfg.config.run.tensorrt_device.split(':')[1]))
     print(f"Current CUDA device: {torch.cuda.current_device()}")
-    
+    torch_tensorrt.runtime.set_cudagraphs_mode(True)
+
     setup_seeds(cfg.config.run)
     
     # Load models
@@ -392,10 +409,9 @@ def main(args):
     salmonn_preprocessor.llama_model = llama_model
     salmonn_preprocessor.eval()
     
-    # Load data
-    dataloader = get_dataset(cfg.config.datasets, cfg.config.run, args.task)
-    dataloader = CalibrationDataloader(salmonn_preprocessor, dataloader, cfg)
-
+    # Load data - 한 번만 생성
+    dataset = get_dataset(cfg.config.datasets, cfg.config.run)
+    
     torch_tensorrt.runtime.set_multi_device_safe_mode(True)
     torch_tensorrt.runtime.set_cudagraphs_mode(True)
 
@@ -410,11 +426,11 @@ def main(args):
         cfg.config.run
     )
     
-    save_ptq_llm(
-        salmonn_preprocessor.llama_model,
-        dataloader,
-        cfg.config.run
-    )
+    # save_ptq_llm(
+    #     salmonn_preprocessor,
+    #     dataset,  # 여기서 calibration_dataloader 사용
+    #     cfg
+    # )
  
 if __name__ == '__main__':
     args = parse_args()
