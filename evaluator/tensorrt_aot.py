@@ -252,8 +252,6 @@ def save_llm_trt(llm, config):
         llm = llm.merge_and_unload()
 
     llm.config.use_cache = False
-    # validate_model_kwargs 메소드를 무효화
-    llm._validate_model_kwargs = lambda x: None
     
     # Wrap the model
     llm = LLMWrapper(llm)
