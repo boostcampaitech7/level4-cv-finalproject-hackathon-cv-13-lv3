@@ -114,7 +114,7 @@ def main():
         # 새로운 모델 할당
         salmonn_preprocessor.speech_encoder = speech_encoder
 
-        salmonn_preprocessor.llama_model.forward = trt_llm.forward
+        # salmonn_preprocessor.llama_model.forward = trt_llm.forward
         
         del trt_llm, speech_encoder
         torch.cuda.empty_cache()
