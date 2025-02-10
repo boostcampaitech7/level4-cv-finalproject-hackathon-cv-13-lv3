@@ -1,21 +1,9 @@
-# 📖 Overview
-![](https://i.imgur.com/SqupAoR.png)
-Bone Segmentation은 인공지능 분야에서 중요한 응용 분야 중 하나로, 특히, 딥러닝 기술을 이용한 뼈 Segmentation은 많은 연구가 이루어지고 있으며, 다양한 목적으로 도움을 줄 수 있습니다.
+# 📖 오디오 언어모델의 경량 모델링 레서피 탐구(ASR/AAC)
 
-<br>
-
-## 🗂 Dataset
-- **Input :** hand bone x-ray 객체가 담긴 이미지가 모델의 인풋으로 사용됩니다. segmentation annotation은 json file로 제공됩니다.
-- **Output :** 모델은 각 픽셀 좌표에 따른 class를 출력하고, 이를 rle로 변환하여 리턴합니다. 이를 output 양식에 맞게 csv 파일을 만들어 제출합니다.
 <br><br>
-- 전체 이미지 개수: 800장(Train), 288장(Test)
-- 크게 손가락 / 손등 / 팔로 구성되며, 총 29개의 class (뼈 종류)가 존재합니다.
-<br><br><br>
 
-## 📃 Metric
-![image](https://github.com/user-attachments/assets/f77da0ea-caf8-4e15-a592-dab7f6c331b0)
-2 * (예측 영역 ∩ 실제 영역) / (예측 영역의 크기 + 실제 영역의 크기)인 DICE score는 예측된 영역과 실제 영역 간의 중첩 정도를 수치화하여 표현합니다. 
-이 공식은 두 영역이 완전히 일치할 때 최대값인 1을 갖고, 전혀 겹치지 않을 때 최소값인 0을 갖습니다.
+## 🗂 Overview
+Audio adapter의 결합 및 사전학습을 통해, 언어모델은 음성/음악/환경음 등의 소리를 이해하고 다양한 downstream task를 수행할 수 있게 되었습니다. VRAM의 크기가 작은 전형적인 디바이스 환경에서는 오디오 언어모델에 대한 경량 모델링이 필수적입니다. Audio understanding benchmarks에 대한 baseline 모델의 정확도를 유지하면서도, 더 작고 빠른 모델을 만드는 레서피를 디자인합니다.
 
 <br><br>
 # Team CV-13
