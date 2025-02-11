@@ -73,12 +73,12 @@ datasets:
   
 run:
   seed: 42
-  batch_size_eval: 1
-  num_workers: 1
+  batch_size_eval: 8
+  num_workers: 8
   device: "cuda"
   world-size: 2
   dist_url: "env://"
   distributed: True
   tensorrt: True
   optimization_level: 3
-  tensorrt_device: "cuda:1"
+  tensorrt_device: "cuda:0"
