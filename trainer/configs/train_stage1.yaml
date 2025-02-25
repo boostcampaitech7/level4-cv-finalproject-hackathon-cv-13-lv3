@@ -1,0 +1,101 @@
+# Copyright (2024) Tsinghua University, Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+project_name : 'Salmonn'
+model:
+  torch_compile_mode: "max-autotune"
+  liger_kernel: False
+  # paths
+  llama_path: "meta-llama/Llama-3.2-3B-Instruct"
+  whisper_path: "openai/whisper-large-v3-turbo" #"openai/whisper-large-v2"
+  beats_path: "/data/dataset/pretrained/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt"
+  #Ced_path:  "/data/dataset/pretrained/audiotransformer_base_mAP_4999.pt"
+
+  token: ""
+
+  ckpt: "" #"/data/kjh/level4-cv-finalproject-hackathon-cv-13-lv3/trainer/outputs_stage1_only/0205-llama-whisperv3turbo-BEATs-aug_2/checkpoint_best.pth" #"model ckpt" # if not "", load model from ckpt for training or evaluation
+
+  freeze_whisper: True
+  freeze_beats: True
+
+  # window-level Q-Former
+  use_speech_Qformer: True
+  freeze_speech_QFormer: False
+  window_level_Qformer: True
+  num_speech_query_token: 1
+  second_per_window: 0.333333
+  second_stride: 0.333333
+
+  speech_llama_proj_model: ""
+  freeze_speech_llama_proj: False
+
+  # LoRA
+  lora: True
+  lora_rank: 8
+  lora_alpha: 32
+  lora_dropout: 0.1
+
+  multi_prompt: True
+  prompt_template: "USER: {}\nASSISTANT:"
+  prompt_path: "prompts/train_prompt.json"
+  test_prompt_path: "prompts/test_prompt.json"
+  max_txt_len: 300
+  end_sym: "<|end_of_text|>"   # TODO: change eos token
+
+datasets:
+  prefix: "/data/dataset"
+  
+  train_ann_path: "/data/dataset/new_jsons/rms_volume_0/stage1_train_indented_99.json" #"/data/dataset/stage1_train_99.json"
+  valid_ann_path: "/data/dataset/stage1_valid_001.json" #"/data/dataset/stage1_valid_01.json"
+  test_ann_path: "/data/dataset/test_aac.json"
+
+  whisper_path: "openai/whisper-large-v3-turbo" # "openai/whisper-large-v2"
+
+run:
+  # log & settings
+  save_ep: 3    # 몇 에폭마다 체크포인트 저장할지
+  seed: 42
+  output_dir: "Final_outputs_stage1"
+  evaluate: False # if True, only evaluate model on test data
+  exp_name: "llama-whisperv3turbo-BEATs-Final-ep30"
+
+  log_freq: 5
+  log_level_warning: True # log level이 Info면 모델의 layer도 전부 출력
+  epoch_based: False
+  iters_per_epoch: 3000
+  accum_grad_iters: 1
+  batch_size_train: 8
+  batch_size_eval: 16
+  num_workers: 8
+
+  device: "cuda"
+  use_distributed: True
+  amp: True
+  world_size: 2
+  dist_url: "env://"
+
+  # optimizer & scheduler
+  optims:
+    max_epoch: 30
+    warmup_steps: 3000
+    warmup_start_lr: 1e-6
+    init_lr: 3e-5
+    min_lr: 1e-5
+    weight_decay: 0.05
+    beta2: 0.999
+
+    use_apollo: False
+    rank: 1
+    scale_type: 'tensor'
+    scale: 128
+    update_proj_gap: 200
