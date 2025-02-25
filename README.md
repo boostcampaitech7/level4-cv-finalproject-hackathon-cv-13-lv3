@@ -1,4 +1,13 @@
 # 📖 오디오 언어모델의 경량 모델링 레서피 탐구(ASR/AAC)
+<a href="https://boyamie.github.io/reports/Nota.pdf">
+  <img src="https://img.shields.io/badge/WrapUp_Report-white?style=for-the-badge&logo=adobeacrobatreader&logoColor=red" alt="Nota report">
+</a>
+<a href="https://github.com/boostcampaitech7/level4-cv-finalproject-hackathon-cv-13-lv3" style="margin-left: 10px;">
+  <img src="https://img.shields.io/badge/Project_Github-black?style=for-the-badge&logo=github" alt="project github">
+</a>
+<a href="https://boyamie.github.io/reports/nota.pptx">
+  <img src="https://github.com/user-attachments/assets/38f317b9-9dec-4e19-bace-67bd617dd269" alt="PPT" style="height: 20px; vertical-align: middle;"/>
+</a>
 
 <br><br>
 
